@@ -2,11 +2,16 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, existsSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const entry = resolve(root, 'dist/index.cjs');
+const version = spawnSync(process.execPath, [entry, '--version'], {
+  cwd: tmpdir(), env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot }, encoding: 'utf8', timeout: 15000,
+});
+assert.equal(version.status, 0, version.error?.message ?? version.stdout + version.stderr);
+assert.equal(version.stdout.trim(), JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')).version);
 const env = {
   PATH: process.env.PATH, SystemRoot: process.env.SystemRoot,
   FEISHU_APP_ID: 'smoke-app', FEISHU_APP_SECRET: 'smoke-secret', FEISHU_BOT_OPEN_ID: 'smoke-bot',

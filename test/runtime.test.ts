@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { realpathSync } from 'node:fs';
+import { realpathSync, readFileSync } from 'node:fs';
 import { AcpRuntime } from '../src/runtime.ts';
 
 test('real stdio transports initialize, session, text and permission', async () => {
@@ -24,6 +24,16 @@ test('real stdio transports initialize, session, text and permission', async () 
 
 const fixture = fileURLToPath(new URL('./fixture-agent.mjs', import.meta.url));
 const permission = async () => ({ outcome: { outcome: 'cancelled' as const } });
+
+test('ACP handshake reports the package version', async () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const rt = new AcpRuntime(process.cwd(), fixture); let text = '';
+  try {
+    const session = await rt.open(undefined, chunk => { text += chunk; }, permission);
+    await rt.prompt(session, 'client-info');
+    assert.deepEqual(JSON.parse(text), { name: 'agent-bridge', version: pkg.version });
+  } finally { await rt.stop(); }
+});
 
 test('adapter fallback to interactive mode blocks the prompt for both new and resumed sessions', async () => {
   const previous = process.env.CLAUDE_CONFIG_DIR;

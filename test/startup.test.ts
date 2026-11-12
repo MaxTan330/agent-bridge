@@ -1,10 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, existsSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+test('--version prints the package version without configuration or registration', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const run = spawnSync(process.execPath, [fileURLToPath(new URL('../src/main.ts', import.meta.url)), '--version'], {
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot }, encoding: 'utf8', timeout: 10000,
+  });
+  assert.equal(run.status, 0, run.stderr + run.stdout);
+  assert.equal(run.stdout.trim(), pkg.version);
+});
 
 test('fresh --check works without a gateway and writes no credentials', () => {
   const data = mkdtempSync(join(tmpdir(), 'bridge-startup-'));

@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          # Optional PAT/App token lets Release Please PRs trigger ordinary PR checks.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    needs: release
+    if: needs.release.outputs.created == 'true'
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    # GITHUB_TOKEN-created tags/releases do not trigger another workflow.
+    # Call the publisher directly with the exact tag created above.
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      release-tag: ${{ needs.release.outputs.tag }}

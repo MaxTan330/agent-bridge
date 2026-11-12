@@ -23,7 +23,7 @@ test('fast replies show only the answer, with typing feedback cleaned up and no 
     async task(_m, reply) { events.push(reply.state); assert.equal(reply.text, '# Answer\n- done'); },
     async stopTyping(_m, id) { assert.equal(id, 'reaction'); events.push('stop-typing'); },
     forgetTask() { events.push('forget'); },
-  }, { users: ['u'], admins: [], workspace: 'w', taskTimeout: 1000, cancelGrace: 10 });
+  }, { users: ['u'], admins: [], workspace: 'w', replyMode: 'stream', taskTimeout: 1000, cancelGrace: 10 });
   await bridge.handle({ account: 'a', chat: 'c', thread: '', user: 'u', id: 'm', text: 'go' });
   assert.deepEqual(events, ['typing', 'completed', 'forget', 'stop-typing']);
   db.close();
@@ -45,7 +45,7 @@ test('final card waits for in-flight progress and replaces it without a second r
       if (reply.state === 'running') { sawProgress(); await new Promise<void>(r => { releaseProgress = r; }); }
       else assert.equal(reply.text, 'preview answer');
     },
-  }, { users: ['u'], admins: [], workspace: 'w', taskTimeout: 10000, cancelGrace: 10 });
+  }, { users: ['u'], admins: [], workspace: 'w', replyMode: 'stream', taskTimeout: 10000, cancelGrace: 10 });
   const run = bridge.handle({ account: 'a', chat: 'c', thread: '', user: 'u', id: 'm', text: 'go' });
   await progressStarted; finish(); await new Promise(r => setTimeout(r, 10));
   assert.deepEqual(events, ['running']); releaseProgress(); await run;
@@ -63,7 +63,7 @@ for (const outcome of ['failed', 'cancelled'] as const) {
       async send() { assert.fail('No status text'); },
       async startTyping() { return 'typing'; }, async stopTyping() { removed++; },
       async task(_m, reply) { assert.equal(reply.state, outcome); },
-    }, { users: ['u'], admins: [], workspace: 'w', taskTimeout: 1000, cancelGrace: 10 });
+    }, { users: ['u'], admins: [], workspace: 'w', replyMode: 'stream', taskTimeout: 1000, cancelGrace: 10 });
     await bridge.handle({ account: 'a', chat: 'c', thread: '', user: 'u', id: 'm', text: 'go' });
     assert.equal(removed, 1); assert.equal(bridge.active, undefined); db.close();
   });
@@ -77,7 +77,7 @@ test('cancelled partial output explicitly says it was cancelled without a state 
   };
   const b = new Bridge(db, runtime, {
     async send() {}, async task(_m, reply) { answer = reply.text; },
-  }, { users: ['u'], admins: [], workspace: 'w', taskTimeout: 1000, cancelGrace: 10 });
+  }, { users: ['u'], admins: [], workspace: 'w', replyMode: 'stream', taskTimeout: 1000, cancelGrace: 10 });
   await b.handle({ account: 'a', chat: 'c', thread: '', user: 'u', id: 'partial-cancel', text: 'go' });
   assert.match(answer, /partial answer/); assert.match(answer, /已取消/); db.close();
 });
@@ -86,7 +86,7 @@ test('failed task insert rolls back claim and permits a later retry', async () =
   const db = new Store(':memory:'); let prompts = 0;
   const rt: Runtime = { async open() { return 's'; }, async prompt() { prompts++; return 'end_turn'; }, async cancel() {}, async stop() {} };
   const b = new Bridge(db, rt, { async send() {} },
-    { users: ['u'], admins: [], workspace: 'w', taskTimeout: 1000, cancelGrace: 10 });
+    { users: ['u'], admins: [], workspace: 'w', replyMode: 'stream', taskTimeout: 1000, cancelGrace: 10 });
   const m = { account: 'a', chat: 'c', thread: '', user: 'u', id: 'dbfail', text: 'go' };
   db.db.exec("CREATE TRIGGER fail_task BEFORE INSERT ON tasks BEGIN SELECT RAISE(ABORT, 'test failure'); END");
   await b.handle(m);
@@ -104,7 +104,7 @@ test('graceful cancellation cleans background work before releasing lock', async
     async cancel() { end(); }, async stop() { await new Promise(r => setTimeout(r, 20)); alive = false; },
   };
   const b = new Bridge(db, rt, { async send() {} },
-    { users: ['u'], admins: [], workspace: 'w', taskTimeout: 1000, cancelGrace: 100 });
+    { users: ['u'], admins: [], workspace: 'w', replyMode: 'stream', taskTimeout: 1000, cancelGrace: 100 });
   const run = b.handle({ account: 'a', chat: 'c', thread: '', user: 'u', id: 'cancel-bg', text: 'go' });
   await new Promise(r => setTimeout(r, 10));
   const cancelling = b.cancel();
@@ -118,7 +118,7 @@ test('failed final delivery persists result and /result retrieves without replay
   const rt: Runtime = { async open(_old, cb) { update = cb; return 's'; }, async prompt() { prompts++; update('retained answer'); return 'end_turn'; }, async cancel() {}, async stop() {} };
   const b = new Bridge(db, rt, {
     async send(_m, text) { if (fail) throw new Error('permanent transport error'); sent.push(text); },
-  }, { users: ['u'], admins: [], workspace: 'w', taskTimeout: 1000, cancelGrace: 10 });
+  }, { users: ['u'], admins: [], workspace: 'w', replyMode: 'stream', taskTimeout: 1000, cancelGrace: 10 });
   const m = { account: 'a', chat: 'c', thread: '', user: 'u', id: 'delivery', text: 'go' };
   await b.handle(m); assert.equal(prompts, 1);
   assert.match(db.latestResult(b.key(m))!.text, /retained answer/);
@@ -132,7 +132,7 @@ test('rejected input gets feedback only after authorization and never starts run
   const db = new Store(':memory:'); let opens = 0; const replies: string[] = [];
   const rt: Runtime = { async open() { opens++; return 's'; }, async prompt() { return 'end_turn'; }, async cancel() {}, async stop() {} };
   const b = new Bridge(db, rt, { async send(_m, text) { replies.push(text); } },
-    { users: ['u'], admins: [], workspace: 'w', taskTimeout: 1000, cancelGrace: 10 });
+    { users: ['u'], admins: [], workspace: 'w', replyMode: 'stream', taskTimeout: 1000, cancelGrace: 10 });
   const m = { account:'a', chat:'c', thread:'', user:'u', id:'long-input', text:'', rejection:'输入过长，请拆分。' };
   await b.handle({...m,user:'other'}); assert.equal(replies.length,0);
   await b.handle(m); assert.equal(replies.length,1); assert.equal(opens,0); db.close();
@@ -145,7 +145,7 @@ test('final delivery retries transient failures without rerunning the agent', as
     async send(_m, text) {
       if (++attempts < 3) throw Object.assign(new Error('network'), { code: 'ECONNRESET' });
     },
-  }, { users: ['u'], admins: [], workspace: 'w', taskTimeout: 2000, cancelGrace: 10 });
+  }, { users: ['u'], admins: [], workspace: 'w', replyMode: 'stream', taskTimeout: 2000, cancelGrace: 10 });
   const m = { account:'a', chat:'c', thread:'', user:'u', id:'retry-result', text:'go' };
   await b.handle(m); assert.equal(prompts, 1); assert.equal(attempts, 3);
   assert.equal(db.latestResult(b.key(m))?.delivery, 'sent'); db.close();
@@ -170,7 +170,7 @@ test('bridge rejects unauthorized users, deduplicates and isolates user sessions
   };
   const b = new Bridge(db, runtime,
     { async send(_m, text) { sent.push(text); } },
-    { users: ['u', 'v'], admins: [], workspace: 'w', taskTimeout: 1000, cancelGrace: 10 });
+    { users: ['u', 'v'], admins: [], workspace: 'w', replyMode: 'stream', taskTimeout: 1000, cancelGrace: 10 });
   const m: Inbound = { account: 'a', chat: 'c', thread: '', user: 'u', id: '1', text: 'hello' };
   await b.handle({ ...m, user: 'intruder' }); assert.equal(prompts, 0);
   await b.handle(m); await b.handle(m); assert.equal(prompts, 1);
@@ -179,7 +179,7 @@ test('bridge rejects unauthorized users, deduplicates and isolates user sessions
   db.close();
 });
 
-test('busy workspace rejects new task; only owner can cancel', async () => {
+test('busy workspace queues new task; only owner can cancel', async () => {
   const db = new Store(':memory:'); let end: () => void = () => {}; let cancelled = 0;
   const runtime: Runtime = {
     async open() { return 'session'; },
@@ -189,13 +189,15 @@ test('busy workspace rejects new task; only owner can cancel', async () => {
   const sent: string[] = [];
   const b = new Bridge(db, runtime,
     { async send(_m, text) { sent.push(text); } },
-    { users: ['u', 'v'], admins: [], workspace: 'w', taskTimeout: 1000, cancelGrace: 10 });
+    { users: ['u', 'v'], admins: [], workspace: 'w', replyMode: 'stream', taskTimeout: 1000, cancelGrace: 10 });
   const m: Inbound = { account: 'a', chat: 'c', thread: '', user: 'u', id: '1', text: 'go' };
   const active = b.handle(m);
   await new Promise(r => setTimeout(r, 10));
   await b.handle({ ...m, id: '2', text: 'busy' });
-  assert.ok(sent.some(s => s.includes('忙')));
+  assert.ok(sent.some(s => s.includes('已加入队列')));
+  const queued = db.db.prepare("SELECT id FROM tasks WHERE status='queued'").get()!.id;
   await b.handle({ ...m, id: '3', user: 'v', text: '/cancel' }); assert.equal(cancelled, 0);
+  await b.handle({ ...m, id: 'cancel-queued', text: `/cancel ${queued}` });
   await b.handle({ ...m, id: '4', text: '/cancel' });
   await active; assert.equal(cancelled, 1);
   db.close();
@@ -210,7 +212,7 @@ test('task timeout forcibly stops unresponsive runtime and releases workspace', 
   };
   const b = new Bridge(db, runtime,
     { async send() {} },
-    { users: ['u'], admins: [], workspace: 'w', taskTimeout: 20, cancelGrace: 10 });
+    { users: ['u'], admins: [], workspace: 'w', replyMode: 'stream', taskTimeout: 20, cancelGrace: 10 });
   await b.handle({ account: 'a', chat: 'c', thread: '', user: 'u', id: 'timeout', text: 'go' });
   assert.ok(stopped > 0); assert.equal(b.active, undefined);
   assert.equal(db.db.prepare('SELECT status FROM tasks').get()?.status, 'cancelled');
@@ -226,7 +228,7 @@ test('bounded output marks truncation and retains final answer after long stream
   };
   const b = new Bridge(db, runtime,
     { async send(_m, text) { sent.push(text); } },
-    { users: ['u'], admins: [], workspace: 'w', taskTimeout: 1000, cancelGrace: 10 });
+    { users: ['u'], admins: [], workspace: 'w', replyMode: 'stream', taskTimeout: 1000, cancelGrace: 10 });
   await b.handle({ account: 'a', chat: 'c', thread: '', user: 'u', id: 'long', text: 'go' });
   assert.ok(sent.at(-1)?.endsWith('FINAL ANSWER'));
   assert.ok(sent.at(-1)?.startsWith('（回复过长，以下保留末尾 24000 字符。）'));
@@ -250,7 +252,7 @@ test('streaming keeps cumulative content and final replies retain more than 1200
       if (reply.state === 'running') { preview = reply.text; progressed(); }
       else answer = reply.text;
     },
-  }, { users: ['u'], admins: [], workspace: 'w', taskTimeout: 5000, cancelGrace: 10 });
+  }, { users: ['u'], admins: [], workspace: 'w', replyMode: 'stream', taskTimeout: 5000, cancelGrace: 10 });
   const m = { account: 'a', chat: 'c', thread: '', user: 'u', id: 'full', text: 'go' };
   await b.handle(m);
   assert.equal(preview, first); assert.equal(answer, first + last);
@@ -267,7 +269,7 @@ test('slow typing reaction does not delay runtime startup and is still removed',
     async send() {},
     async startTyping(_m, signal) { typingSignal = signal; await new Promise<void>(r => { release = r; }); return 'reaction'; },
     async stopTyping() { removed = true; },
-  }, { users: ['u'], admins: [], workspace: 'w', taskTimeout: 1000, cancelGrace: 10, deliveryTimeout: 50 });
+  }, { users: ['u'], admins: [], workspace: 'w', replyMode: 'stream', taskTimeout: 1000, cancelGrace: 10, deliveryTimeout: 50 });
   await b.handle({ account: 'a', chat: 'c', thread: '', user: 'u', id: 'typing', text: 'go' });
   assert.equal(openedBeforeTimeout, true); assert.equal(removed, true); db.close();
 });
@@ -279,7 +281,7 @@ test('hanging channel cannot retain workspace lock or block shutdown forever', a
   };
   const b = new Bridge(db, runtime,
     { async send() { await new Promise(() => {}); } },
-    { users: ['u'], admins: [], workspace: 'w', taskTimeout: 10, cancelGrace: 5, deliveryTimeout: 20 });
+    { users: ['u'], admins: [], workspace: 'w', replyMode: 'stream', taskTimeout: 10, cancelGrace: 5, deliveryTimeout: 20 });
   await b.handle({ account: 'a', chat: 'c', thread: '', user: 'u', id: 'hang', text: 'go' });
   assert.equal(b.active, undefined); assert.equal(opens, 1);
   await b.stop(); db.close();

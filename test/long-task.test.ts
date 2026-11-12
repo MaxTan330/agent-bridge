@@ -16,7 +16,7 @@ function fixture() {
   };
   const bridge = new Bridge(db, runtime, {
     async send(_m, text) { sent.push(text); },
-  }, { users: ['u', 'v', 'admin'], admins: ['admin'], workspace: 'w', taskTimeout: 7200000, cancelGrace: 10 });
+  }, { users: ['u', 'v', 'admin'], admins: ['admin'], workspace: 'w', replyMode: 'stream', taskTimeout: 7200000, cancelGrace: 10 });
   return { db, bridge, sent, runtime, finish: (reason = 'end_turn') => finish(reason), update: (text: string) => update(text),
     prompts: () => prompts, stops: () => stops };
 }

@@ -14,7 +14,7 @@ test('registration requests messaging, reactions and CardKit permissions', async
       assert.equal(options.createOnly, true);
       assert.equal(options.appPreset?.name, 'AgentBridge');
       assert.equal(options.addons?.preset, false);
-      assert.deepEqual(options.addons?.scopes?.tenant, ['im:message:send_as_bot', 'im:message.p2p_msg:readonly', 'im:message.group_at_msg:readonly', 'im:message.reactions:write_only', 'cardkit:card:write']);
+      assert.deepEqual(options.addons?.scopes?.tenant, ['im:message:send_as_bot', 'im:message.p2p_msg:readonly', 'im:message.group_at_msg:readonly', 'im:message:readonly', 'im:message.reactions:write_only', 'cardkit:card:write']);
       assert.deepEqual(options.addons?.events?.items?.tenant, ['im.message.receive_v1']);
       options.onQRCodeReady({ url: 'https://accounts.feishu.cn/verify?code=fixture', expireIn: 600 });
       return { client_id: 'cli_app', client_secret: 'never-log-this' };

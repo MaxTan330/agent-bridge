@@ -12,9 +12,15 @@ services:
     restart: unless-stopped
     environment:
       FEISHU_APP_NAME: ${FEISHU_APP_NAME:-AgentBridge}
+      # Container path; intentionally independent of local Node's WORKSPACE_ROOT in .env.
+      # To mount a host project here, see README > 使用宿主机已有项目目录.
       WORKSPACE_ROOT: /data/workspace
       WORKSPACE_PROJECT: ${WORKSPACE_PROJECT:-.}
       TASK_TIMEOUT_MS: ${TASK_TIMEOUT_MS:-7200000}
+      TASK_REPLY_MODE: ${TASK_REPLY_MODE:-auto}
+      TASK_BACKGROUND_NOTICE_MS: ${TASK_BACKGROUND_NOTICE_MS:-5000}
+      SESSION_IDLE_TIMEOUT_MS: ${SESSION_IDLE_TIMEOUT_MS:-14400000}
+      CLAUDE_RUNTIME_CONFIG: ${CLAUDE_RUNTIME_CONFIG:-}
       DATABASE_PATH: /data/bridge/agentbridge.db
       HOME: /home/node
       CLAUDE_CONFIG_DIR: /data/claude

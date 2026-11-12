@@ -1,10 +1,11 @@
 /** 飞书渠道：消息归一化、长连接事件、卡片回调、回复分片与 HTTP 请求取消。 */
+import { AttachmentError, decodeAttachment } from './attachments.ts';
 import * as lark from '@larksuiteoapi/node-sdk';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { DeliveryError, deliveryFailure, apiDeliveryFailure } from './delivery-error.ts';
 import { z } from 'zod';
 import type { Logger } from 'pino';
-import type { Channel, Inbound, TaskReply } from './types.ts';
+import type { Channel, Inbound, TaskReply, PromptAttachment } from './types.ts';
 import { ContentElementId, FeishuReplies, richPost, streamCard } from './feishu-replies.ts';
 import { errorFacts } from './diagnostics.ts';
 
@@ -19,8 +20,8 @@ const eventSchema = z.object({
 const MsgType = { Card: 'interactive', Post: 'post' } as const;
 /**
  * 将飞书消息事件归一化为 Inbound：不符合接入规则（非用户发送、群聊未 @机器人）
- * 返回 undefined；白名单用户的超长/非文本输入返回带 rejection 的消息，
- * 由 Bridge 回复提示而不执行。仅文本消息能进入任务。
+ * 返回 undefined；超长/不支持的输入返回带 rejection 的消息，
+ * 由 Bridge 回复提示而不执行。附件仅保留元数据，授权排队后再下载。
  */
 export function normalizeInbound(raw: unknown, account: string, bot: string): Inbound | undefined {
   const parsed = eventSchema.safeParse(raw); if (!parsed.success) return;
@@ -28,6 +29,15 @@ export function normalizeInbound(raw: unknown, account: string, bot: string): In
   const mentions = (m.mentions ?? []).filter(x => x.id.open_id === bot);
   if (m.chat_type === 'group' && !mentions.length) return;
   const base = { account, chat: m.chat_id, thread: m.thread_id ?? '', user: sender.sender_id.open_id, id: m.message_id, text: '' };
+  if (m.message_type === 'image' || m.message_type === 'file') {
+    try {
+      if (m.content.length > 64000) throw new Error('metadata too large');
+      const data = JSON.parse(m.content);
+      const key = z.string().min(1).max(2048).parse(data[m.message_type === 'image' ? 'image_key' : 'file_key']);
+      const name = m.message_type === 'file' ? z.string().max(1024).optional().parse(data.file_name) : undefined;
+      return { ...base, text: m.message_type === 'image' ? '请分析这张图片。' : '请阅读这个文件。', attachment: { type: m.message_type, key, ...(name === undefined ? {} : { name }) } };
+    } catch { return { ...base, rejection: '附件无效，请重新发送图片或文本文件。' }; }
+  }
   if (m.message_type !== 'text') return { ...base, rejection: '暂不支持非文本消息，请发送文本指令。' };
   const tooLong = () => ({ ...base, rejection: '消息过长，请拆分为不超过 16000 字符的文本后重试。' });
   // 长度上限按移除 mention 之前的原始文本计算，避免移除后恰好达标。
@@ -61,10 +71,10 @@ export class Feishu implements Channel {
       if (signal) config.signal = signal;
       return config;
     });
-    this.http.interceptors.response.use(response => response.data);
+    this.http.interceptors.response.use(response => (response.config as unknown as Record<string, unknown>)['$return_headers'] ? { data: response.data, headers: response.headers } : response.data);
     // A custom logger prevents the SDK's `fatal || info` fallback from logging credentials.
     const silent = () => {};
-    // The response interceptor above unwraps AxiosResponse to the SDK's body-only contract.
+    // The response interceptor preserves the SDK download wrapper when $return_headers is set.
     const httpInstance = this.http as unknown as NonNullable<ConstructorParameters<typeof lark.Client>[0]['httpInstance']>;
     const options = { appId, appSecret, httpInstance, loggerLevel: lark.LoggerLevel.fatal,
       logger: { error: silent, warn: silent, info: silent, debug: silent, trace: silent } };
@@ -158,6 +168,20 @@ export class Feishu implements Channel {
       if (response.code !== 0) throw apiDeliveryFailure(response.code);
       return response;
     } catch (error) { throw deliveryFailure(error); }
+  }
+  async prepare(m: Inbound, signal: AbortSignal): Promise<PromptAttachment[]> {
+    if (!m.attachment) return [];
+    try {
+      signal.throwIfAborted();
+      const resource = await this.signals.run(signal, () => this.client.im.messageResource.get({
+        path: { message_id: m.id, file_key: m.attachment!.key }, params: { type: m.attachment!.type },
+      }));
+      return [await decodeAttachment(resource.getReadableStream(), m.attachment, signal)];
+    } catch (error) {
+      signal.throwIfAborted();
+      if (error instanceof AttachmentError) throw error;
+      throw new AttachmentError('附件下载失败，请确认机器人有读取消息资源的权限，并重新发送附件。');
+    }
   }
   forgetTask(m: Inbound, id: string) { return this.replies.forget(m, id); }
   task(m: Inbound, reply: TaskReply, signal?: AbortSignal) { return this.replies.task(m, reply, signal); }

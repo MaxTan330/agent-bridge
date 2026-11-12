@@ -1,0 +1,39 @@
+# Standalone image deployment: docker compose -f compose.image.yaml up -d
+services:
+  agentbridge:
+    image: ${AGENTBRIDGE_IMAGE:?Set AGENTBRIDGE_IMAGE to a published version, e.g. ghcr.io/maxtan330/agent-bridge:0.1.0}
+    init: true
+    restart: unless-stopped
+    environment:
+      FEISHU_APP_NAME: ${FEISHU_APP_NAME:-AgentBridge}
+      # Container path, not a host directory or a configurable .env value.
+      WORKSPACE_ROOT: /data/workspace
+      WORKSPACE_PROJECT: ${WORKSPACE_PROJECT:-.}
+      TASK_TIMEOUT_MS: ${TASK_TIMEOUT_MS:-7200000}
+      TASK_REPLY_MODE: ${TASK_REPLY_MODE:-auto}
+      TASK_BACKGROUND_NOTICE_MS: ${TASK_BACKGROUND_NOTICE_MS:-5000}
+      SESSION_IDLE_TIMEOUT_MS: ${SESSION_IDLE_TIMEOUT_MS:-14400000}
+      CLAUDE_RUNTIME_CONFIG: ${CLAUDE_RUNTIME_CONFIG:-}
+      DATABASE_PATH: /data/bridge/agentbridge.db
+      HOME: /home/node
+      CLAUDE_CONFIG_DIR: /data/claude
+      TZ: ${TZ:-Asia/Shanghai}
+      npm_config_registry: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      ANTHROPIC_DEFAULT_SONNET_MODEL: ${ANTHROPIC_DEFAULT_SONNET_MODEL:-}
+      ANTHROPIC_DEFAULT_OPUS_MODEL: ${ANTHROPIC_DEFAULT_OPUS_MODEL:-}
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: ${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}
+      ANTHROPIC_DEFAULT_FABLE_MODEL: ${ANTHROPIC_DEFAULT_FABLE_MODEL:-}
+      CLAUDE_CODE_SUBAGENT_MODEL: ${CLAUDE_CODE_SUBAGENT_MODEL:-}
+    volumes:
+      - agent-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 45s
+volumes:
+  agent-data:
