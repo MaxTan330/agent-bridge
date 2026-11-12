@@ -4,6 +4,18 @@ Release Please 根据 Conventional Commits 在发布 PR 中维护此文件，版
 
 首个版本为 `package.json` 中的 `0.1.0`，对应 Git 标签 `v0.1.0` 和镜像标签 `0.1.0`。以下为接入版本管理时的能力记录，正式发布条目由 Release Please 在发布 PR 中生成。
 
+## 0.1.0 (2026-11-12)
+
+
+### Features
+
+* add queued Claude tasks and signed versioned releases ([f54aa17](https://github.com/MaxTan330/agent-bridge/commit/f54aa172382e18401c1308a80a21b0a738829db5))
+
+
+### Bug Fixes
+
+* **ci:** upgrade release-please to Node 24 action runtime ([8caa1af](https://github.com/MaxTan330/agent-bridge/commit/8caa1af6e34d40cf44bac5ba83d10145f0a98056))
+
 ## [初始开发记录]
 
 ### Features
