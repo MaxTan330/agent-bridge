@@ -28,12 +28,19 @@ export class AcpRuntime implements Runtime {
     await this.stop();
     signal?.throwIfAborted();
     // 环境变量白名单：只传 Adapter 运行所需变量；飞书密钥、NPM_TOKEN 等不会进入模型子进程。
+    // 证书变量供自签 CA 网关使用；APPDATA/LOCALAPPDATA/SYSTEMDRIVE 供 Windows 本地开发的工具链使用。
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) =>
-      /^(PATH|HOME|USERPROFILE|SYSTEMROOT|WINDIR|TEMP|TMP|COMSPEC|PATHEXT|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|LANG|LANGUAGE|LC_.*|TZ|ANTHROPIC_.*|CLAUDE_CONFIG_DIR|CLAUDE_CODE_SUBAGENT_MODEL|NPM_CONFIG_REGISTRY)$/.test(k.toUpperCase())));
+      /^(PATH|HOME|USERPROFILE|SYSTEMROOT|WINDIR|TEMP|TMP|COMSPEC|PATHEXT|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|LANG|LANGUAGE|LC_.*|TZ|ANTHROPIC_.*|CLAUDE_CONFIG_DIR|CLAUDE_CODE_SUBAGENT_MODEL|NPM_CONFIG_REGISTRY|NODE_EXTRA_CA_CERTS|SSL_CERT_FILE|SSL_CERT_DIR|APPDATA|LOCALAPPDATA|SYSTEMDRIVE)$/.test(k.toUpperCase())));
     // Compose 可能注入空字符串。省略空网关地址，让 Claude 按自身配置解析路由。
     const gateway = env.ANTHROPIC_BASE_URL?.trim();
     if (gateway) env.ANTHROPIC_BASE_URL = gateway;
     else delete env.ANTHROPIC_BASE_URL;
+    // 空的证书路径同样省略：Node 会把空文件路径当作加载失败而不是忽略。
+    for (const variable of ['NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR'] as const) {
+      const value = env[variable]?.trim();
+      if (value) env[variable] = value;
+      else delete env[variable];
+    }
     // POSIX 下 detached 创建独立进程组：取消时才能连同工具子进程一起终止。
     const child = spawn(process.execPath, [this.entry], { cwd: this.cwd, env, stdio: 'pipe', windowsHide: true, detached: process.platform !== 'win32' });
     this.process = child;

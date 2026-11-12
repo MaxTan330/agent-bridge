@@ -103,9 +103,9 @@ test('cancelling the last queued task during its acknowledgement still schedules
   try {
     const first = f.bridge.handle(message); await nextTurn();
     const queued = f.bridge.handle({ ...message, id: 'queued' });
+    await f.bridge.handle({ ...message, id: 'clear', text: '/cancel all' });
     finish(); await first;
     assert.equal(f.bridge.active, undefined);
-    await f.bridge.handle({ ...message, id: 'clear', text: '/cancel all' });
     releaseAck(); await queued;
     t.mock.timers.tick(idle); await nextTurn();
     assert.equal(f.stops(), 1); assert.equal(f.opened.length, 1);

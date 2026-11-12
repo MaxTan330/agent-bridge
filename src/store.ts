@@ -8,12 +8,15 @@ import { DeliveryState, TaskLimits, TaskState, type TaskTerminalState } from './
 import type { RuntimeHooks } from './types.ts';
 type Preferences = Pick<RuntimeHooks, 'mode' | 'model' | 'effort'>;
 
+/** 启动时清理更早行的默认保留期（30 天）。 */
+export const DefaultDataRetentionMs = 30 * 24 * 60 * 60 * 1000;
+
 /** /result 取回的结果行。 */
 type ResultRow = { task: string; text: string; delivery: DeliveryState };
 
 export class Store {
   db: DatabaseSync;
-  constructor(path: string) {
+  constructor(path: string, retentionMs: number = DefaultDataRetentionMs) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
@@ -32,7 +35,20 @@ export class Store {
     try {
       this.db.prepare('INSERT OR IGNORE INTO results(task,text,delivery) SELECT id,?,? FROM tasks WHERE status=?')
         .run('服务重启，排队任务已中断且未执行，请重新发送。', DeliveryState.Pending, TaskState.Queued);
-      this.db.prepare('UPDATE tasks SET status=? WHERE status IN (?,?)').run(TaskState.Interrupted, TaskState.Running, TaskState.Queued);
+      this.db.prepare('UPDATE tasks SET status=?,at=? WHERE status IN (?,?)')
+        .run(TaskState.Interrupted, Date.now(), TaskState.Running, TaskState.Queued);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    // 中断标记先刷新 at，随后的按期清理不会删除刚被标记的等待项。
+    // tasks/results 以最后一次状态变更时间为准；results 不含时间列，随任务行或孤儿清理。
+    const expired = Date.now() - retentionMs;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('DELETE FROM results WHERE task NOT IN (SELECT id FROM tasks) OR task IN (SELECT id FROM tasks WHERE at<=?)').run(expired);
+      this.db.prepare('DELETE FROM tasks WHERE at<=?').run(expired);
+      // 任务按最后状态变更计时，保留的任务仍需要它的去重键。
+      this.db.prepare('DELETE FROM messages WHERE at<=? AND id NOT IN (SELECT message FROM tasks WHERE message IS NOT NULL)').run(expired);
+      this.db.prepare('DELETE FROM session_history WHERE at<=?').run(expired);
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
@@ -70,11 +86,18 @@ export class Store {
   }
   /** 记录投递结果并累加 attempts（含 /result 重取，不是内部 HTTP 重试次数）。 */
   delivered(id: string, success: boolean) {
-    this.db.prepare('UPDATE results SET delivery=?,attempts=attempts+1 WHERE task=?').run(success ? DeliveryState.Sent : DeliveryState.Failed, id);
+    this.db.prepare('UPDATE results SET delivery=CASE WHEN delivery=? THEN delivery ELSE ? END, attempts=attempts+1 WHERE task=?')
+      .run(DeliveryState.Sent, success ? DeliveryState.Sent : DeliveryState.Failed, id);
   }
   /** 按结果写入顺序取最近结果；排队任务可能先取消，不能按任务接纳顺序排序。 */
-  latestResult(session: string): ResultRow | undefined {
-    return this.db.prepare('SELECT r.task,r.text,r.delivery FROM results r JOIN tasks t ON t.id=r.task WHERE t.session=? ORDER BY r.rowid DESC LIMIT 1').get(session) as ResultRow | undefined;
+  latestResult(session: string, delivery?: DeliveryState): ResultRow | undefined {
+    return this.db.prepare(`SELECT r.task,r.text,r.delivery FROM results r JOIN tasks t ON t.id=r.task
+      WHERE t.session=? AND (? IS NULL OR r.delivery=?) ORDER BY r.rowid DESC LIMIT 1`)
+      .get(session, delivery ?? null, delivery ?? null) as ResultRow | undefined;
+  }
+  resultForTask(session: string, id: string): ResultRow | undefined {
+    return this.db.prepare(`SELECT r.task,r.text,r.delivery FROM results r JOIN tasks t ON t.id=r.task
+      WHERE t.session=? AND r.task=?`).get(session, id) as ResultRow | undefined;
   }
   finish(id: string, status: TaskTerminalState) {
     this.db.prepare('UPDATE tasks SET status=?,at=? WHERE id=?').run(status, Date.now(), id);
@@ -99,7 +122,7 @@ export class Store {
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
-  /** 任务完整收尾后开始计算闲置期；状态查询/回执不刷新。 */
+  /** 运行时收尾后开始计算闲置期；状态查询/回执不刷新。 */
   touchSession(id: string, acp: string) {
     this.db.prepare('UPDATE sessions SET last_used_at=? WHERE id=? AND acp=?').run(Date.now(), id, acp);
     this.db.prepare('UPDATE session_history SET at=? WHERE owner=? AND acp=?').run(Date.now(), id, acp);

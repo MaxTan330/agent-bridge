@@ -8,7 +8,7 @@ import { isRetryableDelivery } from './delivery-error.ts';
 import { AgentFeatures } from './agent-features.ts';
 import { nativeCommand } from './commands.ts';
 import { AttachmentError } from './attachments.ts';
-import { ChatCommand, isControlCommand, StopReason, incompleteReasonText, TaskState, TaskPhase, TaskPhaseLabel, TaskLimits, elapsedText } from './task.ts';
+import { ChatCommand, DeliveryState, isControlCommand, StopReason, incompleteReasonText, TaskState, TaskPhase, TaskPhaseLabel, TaskLimits, elapsedText } from './task.ts';
 
 /** 任务编排核心：用户鉴权、命令、单任务互斥与 FIFO 队列、会话、进度和取消。 */
 
@@ -35,9 +35,10 @@ type Options = {
   /** 会话及空闲 Adapter 的闲置回收期限，默认四小时。 */
   sessionIdleMs?: number;
 };
-type Queued = { id: string; message: Inbound; ready: boolean };
+type Queued = { id: string; message: Inbound; acknowledgement: Promise<boolean> };
 /** 一个活动任务的内存状态；active 存在即独占全局工作区（单实例单任务）。 */
 type Active = {
+  id: string;
   message: Inbound;
   /** 已请求取消；执行与进度路径据此尽快收敛。 */
   cancelled: boolean;
@@ -51,15 +52,17 @@ type Active = {
   phase: TaskPhase;
   /** 整个任务（含结果投递与清理）完成后 resolve；stop() 等待它。 */
   done: Promise<void>;
-  /** 仅执行阶段（不含结果投递）完成后 resolve；cancel 宽限据此计时。 */
+  /** 模型执行结束后 resolve；cancel 宽限据此计时。 */
   executionDone: Promise<void>;
   /** cancel() 的清理 Promise；重复取消共享同一轮清理。 */
   cancellation?: Promise<void>;
+  runtimeCleanup?: Promise<void>;
 };
 export class Bridge {
   db: Store; runtime: Runtime; channel: Channel; options: Options; log: DiagnosticLogger;
   private features: AgentFeatures;
   active?: Active;
+  private delivering = new Set<Active>();
   private queue: Queued[] = [];
   private queueCleanup: Promise<void> = Promise.resolve();
   private idleTimer?: ReturnType<typeof setTimeout>;
@@ -117,14 +120,14 @@ export class Bridge {
   private queueText(m: Inbound) {
     const visible = this.queue.flatMap((entry, index) => this.canManage(m, entry.message)
       ? [`${entry.id}（前方 ${index + (this.active ? 1 : 0)} 项）\n${entry.message.text.replace(/\s+/g, ' ').slice(0, 80)}`] : []);
-    return visible.length ? `当前会话排队任务：\n${visible.join('\n\n')}\n\n/cancel <任务编号> 取消一项；/cancel all 清空本人当前会话的队列。`
+    return visible.length ? `当前会话排队任务：\n${visible.join('\n\n')}\n\n/cancel <任务编号> 取消指定任务；/cancel all 清空本人当前会话的队列。`
       : '当前会话没有可查看的排队任务。';
   }
   private async cancelQueued(m: Inbound, target: string) {
     const selected = this.queue.filter(entry => target === 'all'
       ? this.key(entry.message) === this.key(m)
       : entry.id === target && this.canManage(m, entry.message));
-    if (!selected.length) { await this.send(m, '没有可取消的排队任务。使用 /queue 查看编号，/cancel 取消当前执行任务。'); return; }
+    if (!selected.length) { await this.send(m, '没有匹配的可取消任务。使用 /status 查看当前任务，或使用 /queue 查看排队任务。'); return; }
     let count = 0;
     try {
       for (const entry of selected) {
@@ -145,10 +148,13 @@ export class Bridge {
       try { this.db.complete(entry.id, TaskState.Interrupted, text); }
       catch (error) { this.report(error, 'interrupt-queue', entry.id); }
     }
-    await Promise.all(pending.map(entry => this.result(entry.message, entry.id, text)));
+    await Promise.all(pending.map(async entry => {
+      await entry.acknowledgement;
+      await this.result(entry.message, entry.id, text);
+    }));
   }
   private startNext() {
-    if (this.stopping || this.active || !this.queue[0]?.ready) return;
+    if (this.stopping || this.active || !this.queue.length) return;
     const next = this.queue[0];
     try { this.db.startQueued(next.id); }
     catch (error) {
@@ -157,7 +163,7 @@ export class Bridge {
     }
     this.queue.shift();
     // execute 在第一个 await 前设置 active，后续消息无法抢占 FIFO 队列。
-    void this.execute(next.message, next.id).catch(error => {
+    void this.execute(next.message, next.id, next.acknowledgement).catch(error => {
       this.report(error, 'queued-execution', next.id); this.stopping = true;
       this.queueCleanup = this.interruptQueue('任务调度异常，排队任务已中断，请检查服务后重新发送。');
     });
@@ -178,16 +184,13 @@ export class Bridge {
     this.idleTimer.unref?.();
   }
   private statusText(m: Inbound): string {
-    const active = this.active;
-    if (!active) return '当前会话没有正在执行的任务。';
-    // 状态不能泄露其他使用者的任务。管理员也仅能查看当前应用、聊天与话题。
-    const sameConversation = active.message.account === m.account && active.message.chat === m.chat && active.message.thread === m.thread;
-    if (!sameConversation || (active.message.user !== m.user && !this.options.admins.includes(m.user))) {
-      return '当前会话没有正在执行的任务，工作区正忙。';
-    }
+    const active = this.active && this.canManage(m, this.active.message) ? this.active
+      : Array.from(this.delivering).findLast(task => this.canManage(m, task.message));
+    if (!active) return this.active ? '当前会话没有正在执行的任务，工作区正忙。' : '当前会话没有正在执行的任务。';
     const now = Date.now();
     return [
       `当前任务：${TaskPhaseLabel[active.phase]}`,
+      `任务编号：${active.id}`,
       `已运行：${elapsedText(now - active.startedAt)}`,
       `执行时限：${elapsedText(this.options.taskTimeout)}`,
       active.lastOutputAt === undefined ? '暂未收到文字进展。' : `最近文本输出：${elapsedText(now - active.lastOutputAt)}前`,
@@ -212,16 +215,26 @@ export class Bridge {
         await this.send(m, this.statusText(m) + (queued ? `\n\n当前会话有 ${queued} 项排队任务，使用 /queue 查看和取消。` : '')); return;
       }
       if (m.text === ChatCommand.Queue) { await this.send(m, this.queueText(m)); return; }
-      if (/^\/cancel\s/.test(m.text)) { await this.cancelQueued(m, m.text.slice(ChatCommand.Cancel.length).trim()); return; }
+      if (/^\/cancel\s/.test(m.text)) {
+        const target = m.text.slice(ChatCommand.Cancel.length).trim();
+        const active = this.active;
+        if (active?.id === target && this.canManage(m, active.message)) await this.cancel();
+        else await this.cancelQueued(m, target);
+        return;
+      }
       if (m.text === ChatCommand.Cancel) {
         const a = this.active;
         if (a && this.canManage(m, a.message)) await this.cancel();
         else await this.send(m, '没有可取消的本人任务。');
         return;
       }
-      if (m.text === ChatCommand.Result) {
+      if (m.text === ChatCommand.Result || /^\/result\s/.test(m.text)) {
         try {
-          const result = this.db.latestResult(this.key(m));
+          const session = this.key(m);
+          const target = m.text.slice(ChatCommand.Result.length).trim();
+          const result = !target || target === 'failed'
+            ? this.db.latestResult(session, target === 'failed' ? DeliveryState.Failed : undefined)
+            : this.db.resultForTask(session, target);
           if (result) await this.result(m, result.task, result.text);
           else await this.send(m, '当前会话尚无可取回的结果。');
         } catch (error) { this.report(error, 'read-result'); await this.send(m, '结果暂时无法读取，请稍后重试。'); }
@@ -244,10 +257,12 @@ export class Bridge {
       const id = randomUUID();
       try { if (!this.db.accept(id, this.key(m), messageKey, TaskState.Queued)) return; }
       catch (error) { this.report(error, 'enqueue', id); await this.send(m, '任务未加入队列，请稍后重新发送。'); return; }
-      const entry: Queued = { id, message: { ...m }, ready: false };
-      this.queue.push(entry);
-      await this.send(m, `已加入队列，前方 ${this.queue.length - 1 + (this.active ? 1 : 0)} 项任务，轮到后自动执行，无需重发。\n任务编号：${id}\n/queue 查看队列；/cancel ${id} 取消本项。`);
-      entry.ready = true; this.startNext(); this.scheduleIdleCleanup(); return;
+      const ahead = this.queue.length + (this.active ? 1 : 0);
+      const message = { ...m };
+      const acknowledgement = Promise.resolve().then(() => this.send(message,
+        `已加入队列，前方 ${ahead} 项任务，轮到后自动执行，无需重发。\n任务编号：${id}\n/queue 查看队列；/cancel ${id} 取消本项。`));
+      this.queue.push({ id, message, acknowledgement });
+      await acknowledgement; return;
     }
     // ── 接纳新任务：去重与 running 任务同事务落库；此后到 active 赋值之间无 await，
     //    同步 SQLite 保证事件循环不交错，单任务互斥因此成立 ──
@@ -256,21 +271,29 @@ export class Bridge {
     catch (error) { this.report(error, 'accept-task', id); await this.send(m, '任务未创建，请稍后重新发送。'); return; }
     return this.execute(m, id);
   }
-  private async execute(m: Inbound, id: string) {
+  private async execute(m: Inbound, id: string, queuedAcknowledgement?: Promise<boolean>) {
     clearTimeout(this.idleTimer); this.idleTimer = undefined;
     let done!: () => void; let executionDone!: () => void;
-    // active 跨越执行、保存和投递全过程，只有清理结束才释放工作区。
-    const a: Active = { message: m, cancelled: false, opening: new AbortController(),
+    // active 持有工作区，直到运行时清理和终态落盘。
+    const a: Active = { id, message: m, cancelled: false, opening: new AbortController(),
       startedAt: Date.now(), phase: TaskPhase.Starting,
       done: new Promise<void>(r => { done = r; }), executionDone: new Promise<void>(r => { executionDone = r; }) };
     this.active = a;
     const mode = this.options.replyMode ?? 'auto';
     const background = mode !== 'stream';
     // 回执与模型启动并行；最终结果等待回执结束，避免完成通知排在回执之前。
-    let accepted = Promise.resolve(true);
-    const acknowledge = () => { accepted = this.deliver(signal => this.channel.send(m,
-      `已接收，任务正在后台执行，完成后会通知你。\n任务编号：${id}\n/status 查看进度；/cancel 取消当前任务。`, signal), false,
-    Math.min(this.options.deliveryTimeout ?? TaskLimits.FeedbackTimeoutMs, TaskLimits.FeedbackTimeoutMs)); };
+    let feedbackReady = !queuedAcknowledgement;
+    let executionEnded = false;
+    const queueFeedback = queuedAcknowledgement?.then(() => { feedbackReady = true; }) ?? Promise.resolve();
+    let accepted = queueFeedback;
+    const acknowledge = () => {
+      accepted = queueFeedback.then(async () => {
+        if (queuedAcknowledgement && (executionEnded || a.cancelled)) return;
+        await this.deliver(signal => this.channel.send(m,
+          `已接收，任务正在后台执行，完成后会通知你。\n任务编号：${id}\n/status 查看进度；/cancel ${id} 取消本项。`, signal), false,
+        Math.min(this.options.deliveryTimeout ?? TaskLimits.FeedbackTimeoutMs, TaskLimits.FeedbackTimeoutMs));
+      });
+    };
     let noticeTimer: ReturnType<typeof setTimeout> | undefined;
     if (mode === 'background') acknowledge();
     else if (mode === 'auto') noticeTimer = setTimeout(acknowledge, this.options.backgroundNoticeMs ?? TaskLimits.BackgroundNoticeDelayMs);
@@ -288,7 +311,7 @@ export class Bridge {
       reaction = await this.channel.startTyping!(m, signal);
     }, false, Math.min(this.options.deliveryTimeout ?? TaskLimits.FeedbackTimeoutMs, TaskLimits.FeedbackTimeoutMs)) : Promise.resolve(true);
     const progress = background ? undefined : setInterval(() => {
-      if (!pending || sending || a.cancelled) return;
+      if (!feedbackReady || !pending || sending || a.cancelled) return;
       const text = pending; pending = ''; sending = true;
       progressDelivery = this.taskReply(m, { id, state: TaskState.Running, text, note }).then(() => {}).finally(() => { sending = false; });
     }, TaskLimits.ProgressIntervalMs);
@@ -341,18 +364,29 @@ export class Bridge {
       if (a.cancelled) result = '任务已取消或超时。';
       else if (error instanceof AttachmentError) result = error.message;
     } finally {
-      // ── 终态流水线：进程清理 → 结果落盘 → 等待在途进度 → 投递 → 释放工作区；顺序不可调换 ──
+      // 进程清理和结果落盘后交接工作区，飞书投递独立收尾。
       clearTimeout(deadline); clearInterval(progress); clearTimeout(noticeTimer);
+      executionEnded = true;
       featureRun?.end();
+      executionDone();
       try {
-        if (a.cancelled || status === TaskState.Failed) await this.runtime.stop();
+        if (a.cancelled || status === TaskState.Failed) await this.stopRuntime(a);
       } catch (error) {
         this.report(error, 'cleanup', id); this.stopping = true;
         status = TaskState.Failed; result = '运行进程清理失败，服务已停止接收新任务，请检查服务。';
-      } finally { executionDone(); }
+      }
+      try { this.db.complete(id, status, result); } catch (error) { this.report(error, 'save-result', id); }
+      if (a.session) {
+        try { this.db.touchSession(this.key(m), a.session); } catch (error) { this.report(error, 'touch-session', id); }
+      }
+      a.phase = TaskPhase.Delivering;
+      this.delivering.add(a);
+      this.active = undefined;
+      if (this.stopping && this.queue.length) {
+        this.queueCleanup = this.interruptQueue('服务已停止接收任务，排队任务已中断且未执行，请恢复服务后重新发送。');
+      }
+      this.startNext(); this.scheduleIdleCleanup();
       try {
-        a.phase = TaskPhase.Delivering;
-        try { this.db.complete(id, status, result); } catch (error) { this.report(error, 'save-result', id); }
         await accepted;
         await progressDelivery;
         await this.result(m, id, result, status, note);
@@ -361,25 +395,20 @@ export class Bridge {
         await typing;
         if (reaction && this.channel.stopTyping) await this.deliver(signal => this.channel.stopTyping!(m, reaction!, signal), false, Math.min(this.options.deliveryTimeout ?? TaskLimits.FeedbackTimeoutMs, TaskLimits.FeedbackTimeoutMs));
         this.log.info({ task: id, status }, 'Task finished');
-        if (a.session) {
-          try { this.db.touchSession(this.key(m), a.session); } catch (error) { this.report(error, 'touch-session', id); }
-        }
-        this.active = undefined;
-        if (this.stopping) {
-          this.queueCleanup = this.interruptQueue('服务已停止接收任务，排队任务已中断且未执行，请恢复服务后重新发送。');
-          await this.queueCleanup;
-        }
-        done(); this.startNext(); this.scheduleIdleCleanup();
+        this.delivering.delete(a);
+        done();
       }
     }
+  }
+  private stopRuntime(task: Active) {
+    return task.runtimeCleanup ??= Promise.resolve().then(() => this.runtime.stop());
   }
   /** 取消当前任务：置取消标记、中止启动、通知 Agent；宽限后仍未结束则强制停止进程。
    *  重复调用共享同一轮清理。 */
   async cancel() {
     const a = this.active; if (!a) return;
     if (a.cancellation) return a.cancellation;
-    // 执行已结束时，取消只能触发资源清理，不能把已保存结果的投递阶段改成取消中。
-    if (a.phase !== TaskPhase.Delivering) a.phase = TaskPhase.Cancelling;
+    a.phase = TaskPhase.Cancelling;
     a.cancelled = true; a.opening.abort();
     this.features.cancel(this.key(a.message));
     a.cancellation = (async () => {
@@ -387,8 +416,7 @@ export class Bridge {
       let timer: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([a.executionDone, new Promise<void>(resolve => { timer = setTimeout(resolve, this.options.cancelGrace); })]);
       clearTimeout(timer);
-      // handle() also awaits this shared Runtime cleanup before releasing the lock.
-      if (this.active === a) await this.runtime.stop();
+      if (this.active === a) await this.stopRuntime(a);
     })();
     return a.cancellation;
   }
@@ -397,9 +425,16 @@ export class Bridge {
     this.stopping = true;
     clearTimeout(this.idleTimer); this.idleTimer = undefined;
     const pending = this.interruptQueue('服务停止，排队任务已中断且未执行，请恢复服务后重新发送。');
-    const active = this.active;
-    await this.cancel(); await this.runtime.stop();
-    await active?.done;
-    await pending; await this.queueCleanup; await this.idleCleanup;
+    const tasks = Array.from(this.delivering, task => task.done);
+    if (this.active) tasks.push(this.active.done);
+    try {
+      try { await this.cancel(); }
+      catch (error) { this.report(error, 'shutdown-cancel'); }
+      await this.idleCleanup;
+      await this.runtime.stop();
+    } finally {
+      await Promise.all([pending, ...tasks]);
+      await this.queueCleanup;
+    }
   }
 }

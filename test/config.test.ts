@@ -34,3 +34,23 @@ test('gateway is optional and validates a configured HTTP(S) URL', () => {
     assert.equal(configSchema.parse({ ...required, ANTHROPIC_BASE_URL: ' ' + value + ' ' }).ANTHROPIC_BASE_URL, value);
   }
 });
+
+test('data retention defaults to thirty days and accepts overrides from one day to one year', () => {
+  const required = { WORKSPACE_ROOT: '.', ANTHROPIC_BASE_URL: 'https://gateway.example.com' };
+  assert.equal(baseConfigSchema.parse(required).DATA_RETENTION_MS, 2592000000);
+  assert.equal(baseConfigSchema.parse({ ...required, DATA_RETENTION_MS: '86400000' }).DATA_RETENTION_MS, 86400000);
+  assert.equal(baseConfigSchema.parse({ ...required, DATA_RETENTION_MS: '31536000000' }).DATA_RETENTION_MS, 31536000000);
+  for (const value of ['0', '86399999', '31536000001', 'NaN']) {
+    assert.equal(baseConfigSchema.safeParse({ ...required, DATA_RETENTION_MS: value }).success, false, String(value));
+  }
+});
+
+test('existing-app selection during first scan is an explicit boolean flag', () => {
+  const required = { WORKSPACE_ROOT: '.', ANTHROPIC_BASE_URL: 'https://gateway.example.com' };
+  assert.equal(baseConfigSchema.parse(required).FEISHU_SELECT_EXISTING_APP, false);
+  assert.equal(baseConfigSchema.parse({ ...required, FEISHU_SELECT_EXISTING_APP: 'true' }).FEISHU_SELECT_EXISTING_APP, true);
+  assert.equal(baseConfigSchema.parse({ ...required, FEISHU_SELECT_EXISTING_APP: 'false' }).FEISHU_SELECT_EXISTING_APP, false);
+  for (const value of ['', 'yes', '1', 'TRUE']) {
+    assert.equal(baseConfigSchema.safeParse({ ...required, FEISHU_SELECT_EXISTING_APP: value }).success, false, String(value));
+  }
+});

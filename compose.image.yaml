@@ -6,6 +6,15 @@ services:
     restart: unless-stopped
     environment:
       FEISHU_APP_NAME: ${FEISHU_APP_NAME:-AgentBridge}
+      # Direct binding for an existing published app; leave all blank for QR-code registration.
+      # Any non-blank app field requires the other two plus ALLOWED_USERS.
+      FEISHU_APP_ID: ${FEISHU_APP_ID:-}
+      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
+      FEISHU_BOT_OPEN_ID: ${FEISHU_BOT_OPEN_ID:-}
+      # Also accepted in QR mode: overrides the scanning user as the allowed user.
+      ALLOWED_USERS: ${ALLOWED_USERS:-}
+      # true lets the first-scan confirm page also offer choosing an existing app.
+      FEISHU_SELECT_EXISTING_APP: ${FEISHU_SELECT_EXISTING_APP:-false}
       # Container path, not a host directory or a configurable .env value.
       WORKSPACE_ROOT: /data/workspace
       WORKSPACE_PROJECT: ${WORKSPACE_PROJECT:-.}
@@ -13,6 +22,8 @@ services:
       TASK_REPLY_MODE: ${TASK_REPLY_MODE:-auto}
       TASK_BACKGROUND_NOTICE_MS: ${TASK_BACKGROUND_NOTICE_MS:-5000}
       SESSION_IDLE_TIMEOUT_MS: ${SESSION_IDLE_TIMEOUT_MS:-14400000}
+      # Startup cleanup of expired dedup/task/result/history rows.
+      DATA_RETENTION_MS: ${DATA_RETENTION_MS:-2592000000}
       CLAUDE_RUNTIME_CONFIG: ${CLAUDE_RUNTIME_CONFIG:-}
       DATABASE_PATH: /data/bridge/agentbridge.db
       HOME: /home/node
@@ -28,6 +39,11 @@ services:
       ANTHROPIC_DEFAULT_HAIKU_MODEL: ${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}
       ANTHROPIC_DEFAULT_FABLE_MODEL: ${ANTHROPIC_DEFAULT_FABLE_MODEL:-}
       CLAUDE_CODE_SUBAGENT_MODEL: ${CLAUDE_CODE_SUBAGENT_MODEL:-}
+      # Custom CA for gateways with private certificates; blank means unset.
+      # Paths must exist inside the container (mount the CA file into the volume).
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS:-}
+      SSL_CERT_FILE: ${SSL_CERT_FILE:-}
+      SSL_CERT_DIR: ${SSL_CERT_DIR:-}
     volumes:
       - agent-data:/data
     security_opt:

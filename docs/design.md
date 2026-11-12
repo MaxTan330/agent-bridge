@@ -4,7 +4,7 @@
 
 ## 运行范围与技术选型
 
-服务通过飞书 WebSocket 接收消息，由外部 Claude ACP 进程执行任务。默认短任务直接回复，长任务先发送后台通知再返回结果；stream 模式使用 Typing 表情和原位更新的 Markdown 卡片。当前仅支持一个飞书应用、一个固定项目、一个服务实例，全局最多一个活动任务；忙时按接收顺序排队，默认最多 20 个等待项，当前任务完成收尾后自动启动下一项。
+服务通过飞书 WebSocket 接收消息，由外部 Claude ACP 进程执行任务。默认短任务直接回复，长任务先发送后台通知再返回结果；stream 模式使用 Typing 表情和原位更新的 Markdown 卡片。当前仅支持一个飞书应用、一个固定项目、一个服务实例。工作区内的任务串行执行，忙时按接收顺序排队，默认最多 20 个等待项。飞书投递可以与下一项执行重叠。
 
 运行要求为 Node.js 26，见 [package.json](../package.json)。使用 TypeScript、ACP SDK、飞书 SDK、Pino、Zod 和 Node 内置 SQLite。模块由构造函数注入依赖，不引入 @maxtan/nest-core：当前没有 HTTP 管理接口、Web 鉴权或 Redis 等需要该框架承载的入口。
 
@@ -43,7 +43,7 @@
 
 提示中的“首次正常启动需要绑定”也涵盖仅待查询机器人身份的恢复状态；是否重新扫码由绑定文件是否存在决定。DATABASE_PATH 使用相对路径时，相对于 Bridge 进程 cwd 解析；绑定文件跟随其父目录，与项目 WORKSPACE_ROOT 无关。
 
-任一 FEISHU_APP_ID/FEISHU_APP_SECRET/FEISHU_BOT_OPEN_ID 非空即选择手动模式，必须同时提供这三个字段和非空 ALLOWED_USERS，不能从保存的其他应用补齐使用者。否则读取 SQLite 同目录的 feishu-binding.json；不存在时调用官方 SDK registerApp，终端打印二维码和备用验证链接。createOnly=true 限定创建新应用；addons 请求 preset=false 的机器人最小基座，声明六个应用权限（发消息、接收私聊、接收群聊 @、读取消息及附件资源、发送/删除表情回复、CardKit 卡片写入）与消息事件订阅，不申请用户身份权限。
+任一 FEISHU_APP_ID/FEISHU_APP_SECRET/FEISHU_BOT_OPEN_ID 非空即选择手动模式，必须同时提供这三个字段和非空 ALLOWED_USERS，不能从保存的其他应用补齐使用者。否则读取 SQLite 同目录的 feishu-binding.json；不存在时调用官方 SDK registerApp，终端打印二维码和备用验证链接。默认 createOnly=true 限定创建新应用；FEISHU_SELECT_EXISTING_APP=true 时不传 createOnly，确认页额外提供“选择已有应用”入口，扫码者可改为选择自己名下的已有应用并增量开通同一组 addons（preset=false 的机器人最小基座、六个应用权限：发消息、接收私聊、接收群聊 @、读取消息及附件资源、发送/删除表情回复、CardKit 卡片写入，与消息事件订阅），不申请用户身份权限；选择已有应用时的审批与发布规则以确认页为准。
 
 注册返回的应用凭据和扫码用户身份先写入绑定文件，再通过 tenant_access_token 和 bot/v3/info 获取机器人 open_id。写入采用同目录随机临时文件及 rename，POSIX 权限 0600；不打印 App Secret，文件已排除出 Git 和 Docker 构建上下文。bot 查询失败时保存的凭据仍可在重启后复用。文件包含 version、appId、appSecret、brand，以及可选 ownerOpenId/botOpenId。损坏或未知版本停止启动，不创建替代应用。缺少扫码身份时不开放访问，允许显式 ALLOWED_USERS 补足；有扫码身份时该变量也可覆盖允许使用者。当前仅支持 Feishu，拒绝 Lark 记录并保留文件。
 
@@ -62,10 +62,11 @@
 | 普通文本 | 空闲时启动任务，忙时入 FIFO 队列；执行时恢复对应用户、聊天、话题及项目的会话 |
 | /queue | 查看本人的当前应用、聊天、话题下排队任务编号、摘要及前方数量；管理员可查看同话题其他用户的队列 |
 | /cancel | 发起人或管理员在同一应用、聊天、话题取消当前任务；不清空等待项，收尾后继续下一项 |
-| /cancel <id> | 取消具有管理权限的指定排队任务；不能用编号跨应用、聊天或话题取消 |
+| /cancel <id> | 按编号取消同一应用、聊天和话题内的指定排队或执行中任务，限发起人或管理员 |
 | /cancel all | 仅清空本人当前会话的排队任务，不影响执行中任务或其他用户 |
 | /new | 本会话无执行中和排队任务时删除会话映射；不删除任务结果或 Adapter 历史 |
 | /result | 取回本人的当前话题最近一次已保存结果；运行中也可使用，不重放 prompt |
+| /result <id>、/result failed | 取回本人当前话题的指定结果，或最近一次投递失败的结果 |
 | /status | 查询当前任务阶段、已用时间、执行时限与最近文字输出时间；不调用模型、不返回任务正文 |
 
 /status 仅对同一应用、聊天、话题下的任务发起人或白名单内管理员展示详情；其他已授权使用者只能看到当前会话无任务、工作区忙。同时显示当前会话可查看的排队数量，不返回排队指令正文；无任务时直接回复空闲，不作为普通 prompt 执行。最近输出仅统计非空的 agent_message_chunk 文本，不代表工具心跳，不据此推断停滞或完成百分比。
@@ -83,11 +84,11 @@
 5. 若有会话映射且 Agent 声明支持 loadSession，则尝试恢复；恢复失败改建新会话。新旧会话 ID 不同时在结果卡片附注说明，不能仅凭数据库映射宣称上下文已恢复。
 6. 建立权限模式后保存会话 ID，再发送一次 prompt；发送结果失败不会重放 prompt。
 7. 仅 stopReason 为 end_turn 时标记 completed；取消响应标记 cancelled，达到执行或输出限制、模型拒绝、未知结束原因及执行异常标记 failed。非正常结束响应保留部分输出并附原因，随结果持久化，供 /result 取回。取消和失败路径等待运行进程清理。清理失败时停止接受新消息，并保留运行进程句柄以便再次清理。
-8. 终态与最终文本事务保存，等待在途进度消息后投递最终结果，最后释放 active。结果投递期间工作区仍被占用。收尾后同步将队首 queued 改为 running 并设置 active，其他新消息不能插队。入队回复尚未结束时队首保持等待，不启动后续项；网络投递有超时上限。队列启动落库或进程清理失败时停止调度并中断剩余队列。
+8. 运行时清理后尝试在同一事务中保存终态与最终文本，然后释放工作区。同步将队首 queued 改为 running 并设置 active，保持 FIFO。入队回执与执行并行，最终回复等待本任务的回执及在途进度消息。不同任务的飞书回复可并行投递。队列启动落库或进程清理失败时停止调度并中断剩余队列。
 
 成功任务的 Adapter 暂时保持驻留，下一任务 open 时重建进程，或在停机及全局闲置满 SESSION_IDLE_TIMEOUT_MS（默认 4 小时）时清理。执行中和队列非空时不执行空闲进程回收；新任务等待已开始的空闲清理完成再 open，防止新进程被旧清理终止。子进程 stdout 用于 ACP，stderr 被消费但不写入业务日志。初始化、新建、恢复、设置模式的单次请求上限各为 30 秒；prompt 由整体任务超时控制。
 
-会话映射保存 last_used_at，在建立会话及任务完整收尾时更新。执行入口仅恢复尚未闲置满 SESSION_IDLE_TIMEOUT_MS 的映射，过期则创建新会话；运行中的长任务不因该期限被打断。查询、回执及排队接纳不刷新时间，排队任务在实际执行时判断过期。全局闲置回收也清除过期映射，但不删除任务结果或 Claude 历史。管理命令在普通任务接纳前分流，队列满时仍可执行；/new 有未完成任务时拒绝重置，不进入队列。
+会话映射保存 last_used_at，在建立会话及释放工作区前更新。执行入口仅恢复尚未闲置满 SESSION_IDLE_TIMEOUT_MS 的映射，过期则创建新会话；运行中的长任务不因该期限被打断。查询、回执及排队接纳不刷新时间，排队任务在实际执行时判断过期。全局闲置回收也清除过期映射，但不删除任务结果或 Claude 历史。管理命令在普通任务接纳前分流，队列满时仍可执行；/new 在当前会话有执行中或排队任务时拒绝重置。
 
 TASK_TIMEOUT_MS 默认 7,200,000 毫秒（2 小时），最大 86,400,000 毫秒（24 小时），覆盖会话初始化及 prompt 执行；文字输出不会重置该截止时间，无文字输出也没有单独的空闲取消计时器。执行结束后清除执行计时器，结果投递及清理使用各自的有界等待。关闭飞书客户端不改变任务执行；服务重启、Adapter 退出和模型网关错误仍会中断任务。本实现支持长时间执行的单轮任务，提供进程内有界 FIFO 队列，排队时间不计入执行时限；不提供跨重启恢复调度或脱离 prompt 生命周期的命令完成通知。
 
@@ -95,7 +96,7 @@ TASK_TIMEOUT_MS 默认 7,200,000 毫秒（2 小时），最大 86,400,000 毫秒
 
 ## 持久化与恢复
 
-SQLite 开启 WAL，busy_timeout 为 5 秒。使用 CREATE TABLE IF NOT EXISTS 初始化，并检查 sessions 字段，为旧数据库添加 last_used_at；旧行保持 NULL，下次使用时淘汰映射。当前没有独立迁移框架或任务历史清理任务。
+SQLite 开启 WAL，busy_timeout 为 5 秒。使用 CREATE TABLE IF NOT EXISTS 初始化，并检查 sessions 字段，为旧数据库添加 last_used_at；旧行保持 NULL，下次使用时淘汰映射。当前没有独立迁移框架。
 
 | 表 | 保存内容与语义 |
 |---|---|
@@ -106,11 +107,11 @@ SQLite 开启 WAL，busy_timeout 为 5 秒。使用 CREATE TABLE IF NOT EXISTS �
 | tasks | 任务 ID、会话键、消息去重键、状态和时间；新建进入 running 或 queued |
 | results | 任务 ID、最终发送文本、pending/sent/failed 投递状态、投递轮次数 attempts |
 
-tasks 使用 queued/running/completed/failed/cancelled/interrupted。启动在同一事务内为遗留 queued 任务保存“重启中断且未执行”的结果，并将 queued/running 改为 interrupted；不自动重放任务或补发结果。对历史 running 任务仍不虚构执行结果。正常停止时先从内存移走全部等待项并同步记录 interrupted 结果，再尽力发送通知。取消排队任务保存 cancelled 结果。
+tasks 使用 queued/running/completed/failed/cancelled/interrupted。启动在同一事务内为遗留 queued 任务保存“重启中断且未执行”的结果，并将 queued/running 改为 interrupted（同时刷新 at，保留期从最后一次状态变更计算）；不自动重放任务或补发结果。对历史 running 任务仍不虚构执行结果。正常停止时先从内存移走全部等待项并同步记录 interrupted 结果，再尽力发送通知。取消排队任务保存 cancelled 结果。
 
-/result 按会话键和结果写入顺序查询最近已保存结果，可能是当前运行任务之前的结果；取消较晚提交的排队任务不会遮住随后完成的当前任务答案。attempts 每次完整结果发送调用结束后加一，包含 /result 重取，不是内部 HTTP 重试次数。回复正文与任务终态同事务保存（会话恢复附注仅用于本次任务投递）；若数据库不可写，则记录错误并尽力发送，不能保证结果持久化。
+/result 按会话键和结果写入顺序查询最近已保存结果，可能是当前运行任务之前的结果；取消较晚提交的排队任务不会遮住随后完成的当前任务答案。带任务编号时按同一会话键精确查找；failed 按写入顺序查找投递失败的结果。每次完整结果投递结束后 attempts 加一，含用户重取。任一次投递成功即保留 sent 状态。回复正文与任务终态同事务保存（会话恢复附注仅用于本次任务投递）；若数据库不可写，则记录错误并尽力发送，不能保证结果持久化。
 
-SQLite 不保存完整模型历史；Adapter 会话目录需另外持久化。没有定期删除去重记录，避免旧事件因清理而再次触发执行；任务、结果及去重记录会持续增长，会话映射按闲置期限回收。
+SQLite 不保存完整模型历史；Adapter 会话目录需另外持久化。每次启动在标记中断之后按 DATA_RETENTION_MS（默认 30 天，范围 1 天至 365 天）在同一事务内删除超过保留期的 messages、tasks、results（含任务行已不存在的孤儿结果）和 session_history 行。tasks/results 以任务最后一次状态变更时间为准，保留任务关联的消息去重键也继续保留。清理不会删除 session_preferences 和会话映射，后者按闲置期限回收。去重键清理后，同一事件如再次送达可被重新接纳。`/result` 可取回仍保存在数据库中的结果。
 
 ## 权限约束
 
@@ -158,13 +159,15 @@ CardKit 创建或正文更新失败，或卡片引用发送被 API 明确永久�
 
 | 变量 | 默认值/要求 |
 |---|---|
-| FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_BOT_OPEN_ID | 默认不填写，首次扫码后保存；手动模式三项必须同时提供 |
+| FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_BOT_OPEN_ID | 默认不填写，首次扫码后保存；手动模式三项必须同时提供；Compose 显式映射，空白保持扫码模式 |
 | FEISHU_APP_NAME | 首次扫码创建的预设名称，默认 AgentBridge；去除首尾空白，空值使用默认值；Compose 显式映射，不修改已有应用 |
-| ALLOWED_USERS | 逗号分隔 open_id；自动模式默认扫码者，手动模式必须至少一个 |
+| FEISHU_SELECT_EXISTING_APP | 仅接受 true/false，默认 false；true 时首次扫码确认页可选择已有应用并增量授权；Compose 显式映射 |
+| ALLOWED_USERS | 逗号分隔 open_id；自动模式默认扫码者，手动模式必须至少一个；Compose 显式映射 |
 | ADMIN_USERS | 默认空列表 |
 | WORKSPACE_ROOT | 本地 Node 必填，取消 .env.example 中的注释并设置已存在的绝对目录；相对路径由 Bridge 进程 cwd 解析。Compose 固定注入 /data/workspace，不读取 .env 的同名值，也不据此挂载宿主机目录 |
 | WORKSPACE_PROJECT | 默认 .，解析后的目录必须存在且位于 WORKSPACE_ROOT 内；Compose 从部署环境读取，用于选择 /data/workspace 内的项目 |
 | DATABASE_PATH | 默认 data/agentbridge.db |
+| DATA_RETENTION_MS | 默认 2592000000（30 天）；范围 86400000–31536000000；启动时清理更早的去重、任务、结果与会话历史行；Compose 显式映射 |
 | TASK_TIMEOUT_MS | 默认 7,200,000（2 小时）；范围 1,000–86,400,000；Compose 显式映射，可通过部署环境覆盖 |
 | TASK_REPLY_MODE | 默认 auto：短任务直接返回，长任务通知一次；background 始终先回执；stream 显示 Typing 与流式卡片 |
 | TASK_BACKGROUND_NOTICE_MS | auto 模式通知延迟，默认 5000；可设 10000，范围 1000–60000；从实际执行开始计时，Compose 显式映射 |
@@ -177,6 +180,8 @@ CardKit 创建或正文更新失败，或卡片引用发送被 API 明确永久�
 | ANTHROPIC_DEFAULT_SONNET_MODEL / ANTHROPIC_DEFAULT_OPUS_MODEL / ANTHROPIC_DEFAULT_HAIKU_MODEL | 可选模型别名映射；仅主模型变量不能保证所有子任务使用同一模型 |
 | ANTHROPIC_DEFAULT_FABLE_MODEL | 使用 fable 别名时可配置的模型映射；需网关提供相应模型 |
 | 其他 ANTHROPIC_* | 按前缀透传，具体支持情况由 Adapter/Claude SDK 决定，Bridge 不逐项校验 |
+| NODE_EXTRA_CA_CERTS / SSL_CERT_FILE / SSL_CERT_DIR | 可选的自签网关 CA 证书路径，白名单透传给 Agent 子进程；空白等同未设置；Compose 显式映射，路径须为容器内路径 |
+| APPDATA / LOCALAPPDATA / SYSTEMDRIVE | Windows 本地开发工具链所需，存在时白名单透传；Linux 容器内通常不存在 |
 | CLAUDE_CONFIG_DIR | 本地可选；Compose 固定为 /data/claude |
 | CLAUDE_CODE_SUBAGENT_MODEL | 可选，透传子 Agent 默认模型 |
 | NPM_REGISTRY | Compose 同时用于构建参数和运行环境的 npm/pnpm 源，默认 npmmirror |

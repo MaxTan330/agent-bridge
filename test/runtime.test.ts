@@ -94,7 +94,7 @@ test('stop shares cleanup and resets across two lifecycles', async () => {
   }
 });
 
-test('runtime forwards deployment model, registry, proxy and locale variables without unrelated secrets', async () => {
+test('runtime forwards deployment model, registry, proxy, locale and certificate variables without unrelated secrets', async () => {
   const values = {
     http_proxy: 'http://localhost:1234', https_proxy: 'http://localhost:1235', all_proxy: 'socks5://localhost:1236', no_proxy: 'localhost',
     LANG: 'en_US.UTF-8', TZ: 'Asia/Shanghai', npm_config_registry: 'https://registry.npmmirror.com',
@@ -102,6 +102,8 @@ test('runtime forwards deployment model, registry, proxy and locale variables wi
     ANTHROPIC_MODEL: 'fixture-main', ANTHROPIC_DEFAULT_SONNET_MODEL: 'fixture-sonnet',
     ANTHROPIC_DEFAULT_OPUS_MODEL: 'fixture-opus', ANTHROPIC_DEFAULT_HAIKU_MODEL: 'fixture-haiku',
     CLAUDE_CODE_SUBAGENT_MODEL: 'fixture-subagent', CLAUDE_CONFIG_DIR: 'fixture-config',
+    NODE_EXTRA_CA_CERTS: 'fixture-ca-bundle', SSL_CERT_FILE: 'fixture-ssl-file', SSL_CERT_DIR: 'fixture-ssl-dir',
+    APPDATA: 'fixture-appdata', LOCALAPPDATA: 'fixture-localappdata', SYSTEMDRIVE: 'fixture-systemdrive',
     FEISHU_APP_SECRET: 'do-not-forward', NPM_TOKEN: 'do-not-forward', UNRELATED_SECRET: 'do-not-forward',
   };
   const previous = Object.fromEntries(Object.keys(values).map(k => [k, process.env[k]]));
@@ -111,10 +113,13 @@ test('runtime forwards deployment model, registry, proxy and locale variables wi
   try {
     const session = await rt.open(undefined, chunk => { text += chunk; }, permission);
     await rt.prompt(session, 'environment');
-    const actual = JSON.parse(text);
+    const environment = JSON.parse(text) as Record<string, string>;
+    const actual = process.platform === 'win32'
+      ? Object.fromEntries(Object.entries(environment).map(([key, value]) => [key.toUpperCase(), value]))
+      : environment;
     for (const [key, value] of Object.entries(values)) {
-      if (value === 'do-not-forward') assert.equal(actual[key], undefined);
-      else assert.equal(actual[key] ?? actual[key.toUpperCase()], value, key);
+      const name = process.platform === 'win32' ? key.toUpperCase() : key;
+      assert.equal(actual[name], value === 'do-not-forward' ? undefined : value, name);
     }
   } finally {
     await rt.stop();
@@ -136,6 +141,26 @@ test('runtime omits a blank gateway so Claude can resolve its own route', async 
   } finally {
     if (previous === undefined) delete process.env.ANTHROPIC_BASE_URL;
     else process.env.ANTHROPIC_BASE_URL = previous;
+    await rt.stop();
+  }
+});
+
+test('runtime omits blank certificate override paths instead of pointing Claude at empty files', async () => {
+  const names = ['NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR'] as const;
+  const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  for (const name of names) process.env[name] = '   ';
+  const rt = new AcpRuntime(process.cwd(), fixture);
+  let text = '';
+  try {
+    const session = await rt.open(undefined, chunk => { text += chunk; }, permission);
+    await rt.prompt(session, 'environment');
+    const environment = JSON.parse(text);
+    for (const name of names) assert.equal(environment[name], undefined, name);
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
     await rt.stop();
   }
 });

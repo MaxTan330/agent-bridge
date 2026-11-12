@@ -38,7 +38,7 @@ export function renderQRCodeSVG(url: string): string {
 }
 
 export function createSetupServices(write: (text: string) => void,
-  dependencies: { register?: typeof lark.registerApp; fetch?: typeof fetch; qrCodePath?: string; appName?: string } = {}): SetupServices {
+  dependencies: { register?: typeof lark.registerApp; fetch?: typeof fetch; qrCodePath?: string; appName?: string; selectExistingApp?: boolean } = {}): SetupServices {
   const request = dependencies.fetch ?? fetch;
   async function api(path: string, init: RequestInit, signal?: AbortSignal): Promise<Record<string, unknown>> {
     try {
@@ -67,7 +67,9 @@ export function createSetupServices(write: (text: string) => void,
       });
       try {
         return await (dependencies.register ?? lark.registerApp)({
-          source: 'agent-bridge', signal, createOnly: true,
+          source: 'agent-bridge', signal,
+          // createOnly 隐藏确认页的“选择已有应用”入口；开启选择已有应用时不传该参数。
+          ...(dependencies.selectExistingApp ? {} : { createOnly: true }),
           appPreset: { name: dependencies.appName?.trim() || DefaultFeishuAppName, desc: '飞书中的项目开发助手' },
           addons: { preset: false,
             scopes: { tenant: ['im:message:send_as_bot', 'im:message.p2p_msg:readonly', 'im:message.group_at_msg:readonly', 'im:message:readonly', 'im:message.reactions:write_only', 'cardkit:card:write'] },

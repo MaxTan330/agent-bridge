@@ -174,41 +174,85 @@ test('restart marks persisted queued work interrupted and never replays it', () 
   } finally { db.close(); }
 });
 
-test('queue waits for final delivery and cannot be overtaken by a later arrival', async () => {
+test('final delivery releases the workspace without changing FIFO execution', async () => {
   const f = fixture();
   let releaseDelivery!: () => void;
   const delivery = new Promise<void>(resolve => { releaseDelivery = resolve; });
   f.bridge.channel.task = async m => { if (m.id === 'first') await delivery; };
   const first = f.bridge.handle(message);
   try {
-    await nextTurn(); await f.bridge.handle({ ...message, id: 'second', text: 'second' });
-    f.finish(); await nextTurn(); assert.deepEqual(f.prompts, ['first']);
+    await nextTurn(); await f.bridge.handle({ ...message, user: 'v', id: 'second', text: 'second' });
+    const firstId = f.bridge.active!.id;
+    f.finish(); await nextTurn(); assert.deepEqual(f.prompts, ['first', 'second']);
+    assert.equal(f.db.latestResult(f.bridge.key(message))?.delivery, 'pending');
+    await f.bridge.handle({ ...message, id: 'status', text: '/status' });
+    assert.match(f.sent.at(-1)!.text, /结果发送与清理中/);
+    await f.bridge.handle({ ...message, id: 'cancel', text: `/cancel ${firstId}` });
+    assert.equal(f.bridge.active?.phase, 'executing');
     await f.bridge.handle({ ...message, id: 'third', text: 'third' });
-    releaseDelivery(); await first; await nextTurn();
-    assert.deepEqual(f.prompts, ['first', 'second']);
     const second = f.bridge.active!.done; f.finish(); await second; await nextTurn();
     assert.deepEqual(f.prompts, ['first', 'second', 'third']);
+    releaseDelivery(); await first;
+    assert.equal(f.bridge.active?.message.id, 'third');
+    const third = f.bridge.active!.done; f.finish(); await third;
   } finally { releaseDelivery(); await f.close(); }
 });
 
-test('shutdown during enqueue acknowledgement cannot start or resurrect queued work', async () => {
+test('a slow enqueue acknowledgement does not delay prompts but precedes that task result', async () => {
   const f = fixture(); let releaseAck!: () => void;
   const ack = new Promise<void>(resolve => { releaseAck = resolve; });
+  const events: string[] = [];
+  f.bridge.channel.send = async (m, text) => {
+    if (m.id === 'second' && text.includes('已加入队列')) { await ack; events.push('second-ack'); }
+  };
+  f.bridge.channel.task = async m => { events.push(m.id); };
+  const first = f.bridge.handle(message);
+  try {
+    await nextTurn();
+    const queued = f.bridge.handle({ ...message, id: 'second', text: 'second' });
+    const secondId = f.queued()[0].id;
+    await f.bridge.handle({ ...message, id: 'third', text: 'third' });
+    f.finish(); await first; await nextTurn();
+    assert.deepEqual(f.prompts, ['first', 'second']);
+    const second = f.bridge.active!.done;
+    await f.bridge.handle({ ...message, id: 'cancel-second', text: `/cancel ${secondId}` });
+    await nextTurn();
+    assert.deepEqual(f.prompts, ['first', 'second', 'third']);
+    assert.equal(f.db.taskStatus(secondId), 'cancelled');
+    assert.deepEqual(events, ['first']);
+    releaseAck(); await queued; await second;
+    assert.deepEqual(events, ['first', 'second-ack', 'second']);
+    assert.equal(f.maxConcurrent(), 1);
+  } finally { releaseAck(); await f.close(); }
+});
+
+test('shutdown interrupts waiting work and waits for in-flight notifications', async () => {
+  const f = fixture(); let releaseAck!: () => void;
+  const ack = new Promise<void>(resolve => { releaseAck = resolve; });
+  let releaseDelivery!: () => void;
+  const delivery = new Promise<void>(resolve => { releaseDelivery = resolve; });
+  f.bridge.channel.task = async m => { if (m.id === 'first') await delivery; };
   const send = f.bridge.channel.send;
   f.bridge.channel.send = async (m, text, signal) => {
-    if (text.includes('已加入队列')) await ack;
+    if (m.id === 'queued' && text.includes('已加入队列')) await ack;
     await send(m, text, signal);
   };
   const first = f.bridge.handle(message);
   try {
     await nextTurn();
+    await f.bridge.handle({ ...message, id: 'second', text: 'second' });
+    f.finish(); await nextTurn();
     const queued = f.bridge.handle({ ...message, id: 'queued', text: 'queued' });
     const id = f.queued()[0].id;
-    f.finish(); await first;
-    assert.equal(f.bridge.active, undefined);
-    await f.bridge.stop(); releaseAck(); await queued; await nextTurn();
-    assert.deepEqual(f.prompts, ['first']); assert.equal(f.db.taskStatus(id), 'interrupted');
-  } finally { releaseAck(); await f.close(); }
+    let stopped = false;
+    const shutdown = f.bridge.stop().then(() => { stopped = true; });
+    assert.equal(f.db.taskStatus(id), 'interrupted');
+    releaseAck(); await queued; await nextTurn();
+    assert.equal(stopped, false);
+    releaseDelivery(); await shutdown; await first;
+    assert.deepEqual(f.prompts, ['first', 'second']);
+    assert.deepEqual(f.sent.filter(s => s.message.id === 'queued').map(s => /已加入队列/.test(s.text)), [true, false]);
+  } finally { releaseAck(); releaseDelivery(); await f.close(); }
 });
 
 test('database failure while starting queued task stops dispatch and records interruption', async () => {
@@ -240,4 +284,46 @@ test('result recovers later-completed answer even when a newer queued task was c
     assert.equal(f.sent.at(-1)!.text, '没有文本输出。');
     assert.equal(f.db.latestResult(f.bridge.key(message))!.delivery, 'sent');
   } finally { await f.close(); }
+});
+
+test('result retrieves an older failed delivery by ID and keeps results scoped to the owner and conversation', async () => {
+  const f = fixture();
+  const open = f.runtime.open;
+  f.runtime.open = async (old, update) => {
+    update(f.prompts.length ? 'second answer' : 'first answer');
+    return open(old, update);
+  };
+  let releaseDelivery!: () => void;
+  const delivery = new Promise<void>(resolve => { releaseDelivery = resolve; });
+  f.bridge.channel.task = async m => {
+    if (m.id !== 'first') return;
+    await delivery;
+    throw new Error('final delivery failed');
+  };
+  const first = f.bridge.handle(message);
+  try {
+    await nextTurn();
+    const firstId = f.bridge.active!.id;
+    await f.bridge.handle({ ...message, id: 'second', text: 'second' });
+    f.finish(); await nextTurn();
+    const second = f.bridge.active!.done;
+    f.finish(); await second;
+    releaseDelivery(); await first;
+
+    await f.bridge.handle({ ...message, id: 'recent', text: '/result' });
+    assert.equal(f.sent.at(-1)?.text, 'second answer');
+    for (const [index, scope] of [{ user: 'admin' }, { thread: 'other' }, { account: 'other' }].entries()) {
+      await f.bridge.handle({ ...message, ...scope, id: `other-${index}`, text: `/result ${firstId}` });
+      assert.match(f.sent.at(-1)!.text, /尚无可取回的结果/);
+    }
+    await f.bridge.handle({ ...message, id: 'recover-failed', text: '/result failed' });
+    assert.equal(f.sent.at(-1)?.text, 'first answer');
+    f.db.delivered(firstId, false);
+    assert.equal(f.db.resultForTask(f.bridge.key(message), firstId)?.delivery, 'sent');
+    await f.bridge.handle({ ...message, id: 'recover-again', text: '/result failed' });
+    assert.match(f.sent.at(-1)!.text, /尚无可取回的结果/);
+    await f.bridge.handle({ ...message, id: 'recover-by-id', text: `/result ${firstId}` });
+    assert.equal(f.sent.at(-1)?.text, 'first answer');
+    assert.deepEqual(f.prompts, ['first', 'second']);
+  } finally { releaseDelivery(); await f.close(); }
 });

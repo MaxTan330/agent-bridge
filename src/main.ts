@@ -37,6 +37,7 @@ async function main() {
     const binding = await resolveFeishu(process.env, { path: join(dirname(base.DATABASE_PATH), 'feishu-binding.json'), checkOnly, signal: startup.signal },
       createSetupServices(text => process.stdout.write(text), {
         qrCodePath: join(dirname(base.DATABASE_PATH), 'feishu-qr.svg'), appName: base.FEISHU_APP_NAME,
+        selectExistingApp: base.FEISHU_SELECT_EXISTING_APP,
       }));
     startup.signal.throwIfAborted();
     if (checkOnly) {
@@ -45,7 +46,7 @@ async function main() {
       return;
     }
     const c = configSchema.parse({ ...process.env, ...binding });
-    const db = new Store(c.DATABASE_PATH);
+    const db = new Store(c.DATABASE_PATH, c.DATA_RETENTION_MS);
     cleanup = async () => { await runtime.stop(); db.close(); };
     const channel = new Feishu(c.FEISHU_APP_ID, c.FEISHU_APP_SECRET, c.FEISHU_BOT_OPEN_ID, log);
     const bridge = new Bridge(db, runtime, channel, {

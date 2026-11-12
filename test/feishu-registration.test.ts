@@ -37,6 +37,20 @@ test('registration uses the configured application name', async () => {
   await service.register(); assert.equal(requestedName, '项目助手');
 });
 
+test('registration can offer selecting an existing app instead of creating one', async () => {
+  for (const selectExistingApp of [true, false]) {
+    let createOnly: boolean | undefined = 'unset';
+    const service = createSetupServices(() => {}, { selectExistingApp,
+      async register(options) {
+        createOnly = options.createOnly;
+        return { client_id: 'cli_app', client_secret: 'fixture-secret' };
+      },
+    });
+    await service.register();
+    assert.equal(createOnly, selectExistingApp ? undefined : true);
+  }
+});
+
 test('identity discovery obtains a tenant token and reads the bot without logging credentials', async () => {
   const requests: Array<{url:string;init?:RequestInit}> = [];
   const service = createSetupServices(() => {}, { fetch: async (url, init) => {

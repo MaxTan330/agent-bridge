@@ -39,7 +39,7 @@ export function incompleteReasonText(reason: string): string {
 import { nativeCommand } from './commands.ts';
 export const ChatCommand = { Cancel: '/cancel', New: '/new', Result: '/result', Status: '/status', Queue: '/queue' } as const;
 const controlCommands = new Set<string>(Object.values(ChatCommand));
-export const isControlCommand = (text: string): boolean => controlCommands.has(text) || /^\/cancel\s/.test(text) || !!nativeCommand(text);
+export const isControlCommand = (text: string): boolean => controlCommands.has(text) || /^\/(?:cancel|result)\s/.test(text) || !!nativeCommand(text);
 
 export const TaskLimits = {
   DefaultTimeoutMs: 2 * 60 * 60 * 1000,

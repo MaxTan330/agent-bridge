@@ -4,7 +4,7 @@ export function nativeCommand(text: string): { name: string; argument: string } 
   const match = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(text);
   return match && names.has(match[1]) ? { name: match[1], argument: (match[2] ?? '').trim() } : undefined;
 }
-export const NativeHelp = `任务管理：/status /queue /cancel /cancel <编号> /cancel all /result /new
+export const NativeHelp = `任务管理：/status /queue /cancel /cancel <编号> /cancel all /result /result <编号> /result failed /new
 Claude 能力：/commands /tools /plan /usage /capabilities /config
 任务引导：/steer <补充要求>（只作用于本人正在执行的任务）
 交互回答：/questions /answer <问题编号> <回答或 JSON> /skip <问题编号>
