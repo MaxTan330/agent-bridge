@@ -25,7 +25,7 @@ jobs:
       created: ${{ steps.release.outputs.release_created }}
       tag: ${{ steps.release.outputs.tag_name }}
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0, Node 24
         id: release
         with:
           # Optional PAT/App token lets Release Please PRs trigger ordinary PR checks.
