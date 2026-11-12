@@ -1,0 +1,40 @@
+services:
+  agentbridge:
+    # Build this checkout; no prebuilt application image is pulled.
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-node:26.13.0-bookworm-slim}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-http://mirrors.aliyun.com}
+    init: true
+    restart: unless-stopped
+    environment:
+      FEISHU_APP_NAME: ${FEISHU_APP_NAME:-AgentBridge}
+      WORKSPACE_ROOT: /data/workspace
+      WORKSPACE_PROJECT: ${WORKSPACE_PROJECT:-.}
+      TASK_TIMEOUT_MS: ${TASK_TIMEOUT_MS:-7200000}
+      DATABASE_PATH: /data/bridge/agentbridge.db
+      HOME: /home/node
+      CLAUDE_CONFIG_DIR: /data/claude
+      TZ: ${TZ:-Asia/Shanghai}
+      npm_config_registry: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      ANTHROPIC_DEFAULT_SONNET_MODEL: ${ANTHROPIC_DEFAULT_SONNET_MODEL:-}
+      ANTHROPIC_DEFAULT_OPUS_MODEL: ${ANTHROPIC_DEFAULT_OPUS_MODEL:-}
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: ${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}
+      ANTHROPIC_DEFAULT_FABLE_MODEL: ${ANTHROPIC_DEFAULT_FABLE_MODEL:-}
+      CLAUDE_CODE_SUBAGENT_MODEL: ${CLAUDE_CODE_SUBAGENT_MODEL:-}
+    volumes:
+      - agent-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 45s
+volumes:
+  agent-data:

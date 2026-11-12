@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.build/
+.npm-cache/
+.pnpm-store/
+.env
+data/
+workspaces/
+*.db*
+feishu-binding.json
+feishu-binding.json.*.tmp
+feishu-binding.json.*.probe
+feishu-qr.svg

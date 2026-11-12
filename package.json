@@ -1,0 +1,32 @@
+{
+  "name": "agent-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=26 <27"
+  },
+  "packageManager": "pnpm@12.14.0",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "node scripts/clean.mjs && tsc -p tsconfig.json && ncc build scripts/entry.cjs -o dist -e @agentclientprotocol/claude-agent-acp --no-cache --target es2022 && node scripts/finalize-build.mjs",
+    "test": "node --test test/*.test.ts",
+    "test:bundle": "node scripts/smoke.mjs",
+    "start": "node --env-file-if-exists=.env dist/index.cjs",
+    "dev": "node --env-file-if-exists=.env src/main.ts"
+  },
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "^0.106.0",
+    "@agentclientprotocol/sdk": "^2.6.0",
+    "@larksuiteoapi/node-sdk": "^1.76.0",
+    "pino": "^10.4.0",
+    "qrcode": "^1.5.4",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/qrcode": "^1.5.6",
+    "@vercel/ncc": "^0.45.0",
+    "typescript": "^7.0.2"
+  }
+}
