@@ -19,7 +19,8 @@ flowchart LR
       APP --> C
     end
   end
-  U["飞书用户"] -->|WebSocket 长连接| SVC
+  U["飞书用户"] -->|发送消息| F["飞书平台"]
+  SVC -->|建立 WebSocket 长连接| F
   SVC -->|Anthropic 兼容 API| GW["模型网关"]
 ```
 
@@ -28,11 +29,11 @@ flowchart LR
 下载仓库中的 `compose.image.yaml` 和 `.env.example`，将后者复制为 `.env`。在 `.env` 中取消 `AGENTBRIDGE_IMAGE` 的注释，选择已经成功发布的版本，例如：
 
 ```dotenv
-AGENTBRIDGE_IMAGE=ghcr.io/maxtan330/agent-bridge:0.1.0
+AGENTBRIDGE_IMAGE=ghcr.io/maxtanforge/agent-bridge:0.2.0
 WORKSPACE_PROJECT=.
 ```
 
-`0.1.0` 仅为示例，以仓库 Releases 和 Packages 中实际发布成功的版本为准。镜像只发布完整版本号，不维护 `latest`；未设置 `AGENTBRIDGE_IMAGE` 时 Compose 会明确报错。当前构建平台为 `linux/amd64`。发布镜像经过 Cosign 无密钥签名和验签，部署前可按[镜像签名与验证](releases.md#镜像签名与验证)核对身份、版本和 digest；Compose 不自动验签。
+示例使用已发布的 `0.2.0`。部署其他版本时，以仓库 Releases 和 Packages 中发布成功的版本为准。镜像使用完整版本号，Compose 要求显式设置 `AGENTBRIDGE_IMAGE`。当前构建平台为 `linux/amd64`。发布镜像经过 Cosign 无密钥签名和验签。部署前可按[镜像签名与验证](releases.md#镜像签名与验证)核对身份、版本和 digest。
 
 ```sh
 docker compose -f compose.image.yaml pull

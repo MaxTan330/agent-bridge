@@ -1,7 +1,7 @@
 # Standalone image deployment: docker compose -f compose.image.yaml up -d
 services:
   agentbridge:
-    image: ${AGENTBRIDGE_IMAGE:?Set AGENTBRIDGE_IMAGE to a published version, e.g. ghcr.io/maxtan330/agent-bridge:0.1.0}
+    image: ${AGENTBRIDGE_IMAGE:?Set AGENTBRIDGE_IMAGE to a published version, e.g. ghcr.io/maxtanforge/agent-bridge:0.2.0}
     init: true
     restart: unless-stopped
     environment:

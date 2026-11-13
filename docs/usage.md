@@ -132,7 +132,7 @@ Claude 的 `CLAUDE.md`、Skills、Hooks、子 Agent 和已配置插件继续使�
 
 对符合接入规则且在白名单内的发送者，最终结果与任务终态先事务保存，再投递。可恢复网络错误和限流最多尝试 3 次，总发送窗口 15 秒，使用稳定分片 UUID 去重，不重放 Agent prompt。服务重启后不自动补发，可用 `/result` 取回。数据库本身不可写时无法保证结果落盘，会记录脱敏错误。
 
-每次启动会按 `DATA_RETENTION_MS`（默认 30 天，范围 1 天至 365 天，Compose 已映射）清理超过保留期的消息去重、任务、结果与会话历史行；清理先于新任务发生。`/result` 只能取回保留期内的结果，需要长期留存时请自行备份或调长保留期。
+每次启动会在接收新任务前，按 `DATA_RETENTION_MS`（默认 30 天，范围 1 天至 365 天，Compose 已映射）清理超过保留期的消息去重、任务、结果与会话历史行。`/result` 可取回仍保存在数据库中的结果。运行期间超过保留期的结果会在下次启动时清理。需要长期留存时请备份或延长保留期。
 
 ## 常见问题
 
@@ -142,7 +142,7 @@ Claude 的 `CLAUDE.md`、Skills、Hooks、子 Agent 和已配置插件继续使�
 | 二维码无法扫描 | 使用日志中的授权链接，或打开 SQLite 同目录的 `feishu-qr.svg`（Docker 默认 `/data/bridge/feishu-qr.svg`）；展开 Logs、关闭时间戳和自动换行 |
 | 重启后仍需扫码 | 检查 `DATABASE_PATH` 所在目录是否变化；绑定文件必须跟数据库同目录并一起迁移。不要删除绑定文件 |
 | 已有机器人无法接收附件 | 后台补充 `im:message:readonly` 并发布新版本；重启不会自动补权限 |
-| 不显示 Typing，或流式卡片不更新 | 补充 `im:message.reactions:write_only`、`cardkit:card:write` 并发布；缺卡片权限会降级为富文本 |
+| 不显示 Typing，或流式卡片不更新 | 先确认 `TASK_REPLY_MODE=stream`。默认 `auto` 模式下这两项不显示。已开启流式模式时，检查 `im:message.reactions:write_only` 和 `cardkit:card:write`，补齐缺失权限后发布应用版本。缺卡片权限时会降级为富文本 |
 | 任务长时间无结果 | 用 `/status` 查看阶段和最近输出，用 `/cancel` 取消；确认未超过 2 小时执行时限 |
 | 结果未送达飞书 | 用 `/result` 或 `/result failed` 取回；检查日志中的投递错误分类和网络 |
 | 容器重启导致任务中断 | 预期行为：重启不重放任务，用 `/result` 查看最近结果后重新发送 |

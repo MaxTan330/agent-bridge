@@ -1,6 +1,6 @@
 # 版本发布
 
-`package.json` 的 `version` 是应用和镜像版本的来源。Release Please 负责在发布 PR 中同步更新它、`CHANGELOG.md` 和 `.release-please-manifest.json`，合并后创建 `v<version>` 标签和 GitHub Release，再发布 `ghcr.io/maxtan330/agent-bridge:<version>`。例如 package 版本为 `0.1.0` 时，Git 标签为 `v0.1.0`，镜像标签为 `0.1.0`。
+`package.json` 的 `version` 是应用和镜像版本的来源。Release Please 负责在发布 PR 中同步更新它、`CHANGELOG.md` 和 `.release-please-manifest.json`，合并后创建 `v<version>` 标签和 GitHub Release，再发布 `ghcr.io/maxtanforge/agent-bridge:<version>`。例如 package 版本为 `0.1.0` 时，Git 标签为 `v0.1.0`，镜像标签为 `0.1.0`。
 
 ```mermaid
 flowchart LR
@@ -72,17 +72,21 @@ GitHub Release 创建成功不代表镜像发布完成，需等待 Release workf
 
 无需配置 Cosign 私钥。签名和验证材料随镜像存放于 GHCR；签名证书身份及记录会写入公共 Sigstore 透明日志。原理见 [Sigstore 容器签名](https://docs.sigstore.dev/cosign/signing/signing_with_containers/)，复用 workflow 的身份取自 [Fulcio 的 job_workflow_ref](https://github.com/sigstore/fulcio/blob/main/docs/oidc.md#github)。
 
-成功后在 Actions 的 `sign` job 摘要查看版本、digest、源码提交号和签名身份。安装 Cosign 3 后，将摘要里的完整镜像 digest 填入以下命令（私有镜像需先 `docker login ghcr.io`）：
+安装 Cosign 3 后，从对应发布的 `sign` job 摘要取出版本、完整 digest 和签名身份，填入下列变量。私有镜像需先执行 `docker login ghcr.io`。
 
 ```sh
-IMAGE='ghcr.io/maxtan330/agent-bridge@sha256:<摘要中的完整digest>'
+IMAGE='ghcr.io/maxtanforge/agent-bridge@sha256:<摘要中的完整digest>'
+SIGNER='<摘要中的完整签名身份>'
+VERSION='<摘要中的版本>'
 cosign verify "$IMAGE" \
-  --certificate-identity 'https://github.com/MaxTan330/agent-bridge/.github/workflows/docker-publish.yml@refs/heads/main' \
+  --certificate-identity "$SIGNER" \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  -a version=0.2.0
+  -a "version=$VERSION"
 ```
 
 版本应替换为目标发布版本；还可添加 `-a revision=<摘要中的源码提交号>`。Fork 需将镜像地址和证书身份替换为自己的仓库，身份中的仓库大小写须与 GitHub 一致。验证成功后可将 `AGENTBRIDGE_IMAGE` 设置为同一完整 digest 部署，避免验证与拉取间标签变化。Compose/Portainer 不自动执行验签，需要在部署前执行；签名证明来源与内容完整性，不代表实际功能已经验收。
+
+镜像地址使用当前 GHCR 命名空间。镜像迁移后，验签仍使用发布摘要记录的原始身份。改名前签名的镜像可能记录的是 `https://github.com/MaxTan330/agent-bridge/.github/workflows/docker-publish.yml@refs/heads/main`。
 
 ## 重试、升级与回滚
 
