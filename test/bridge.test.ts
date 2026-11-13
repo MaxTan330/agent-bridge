@@ -153,11 +153,15 @@ test('final delivery retries transient failures without rerunning the agent', as
 
 test('cleanup failure stops new task acceptance and still releases shutdown waiters', async () => {
   const db = new Store(':memory:'); let prompts = 0; let fatal = 0;
-  const rt: Runtime = { async open() { return 's'; }, async prompt() { prompts++; throw new Error('crash'); }, async cancel() {}, async stop() { throw new Error('cannot kill'); } };
+  let update: (text: string) => void = () => {};
+  const rt: Runtime = { async open(_old, onText) { update = onText; return 's'; }, async prompt() { prompts++; update('partial answer'); throw new Error('crash'); }, async cancel() {}, async stop() { throw new Error('cannot kill'); } };
   const b = new Bridge(db, rt, { async send() {} },
     { users:['u'],admins:[],workspace:'w',taskTimeout:1000,cancelGrace:10,onFatal: () => { fatal++; } });
   const m={account:'a',chat:'c',thread:'',user:'u',id:'cleanup-fail',text:'go'};
   await b.handle(m); assert.equal(b.active, undefined); assert.equal(b.stopping, true);
+  const result = db.latestResult(b.key(m))!.text;
+  assert.match(result, /partial answer/);
+  assert.match(result, /清理失败/);
   await b.handle({...m,id:'next'}); assert.equal(prompts,1); assert.equal(fatal,1); db.close();
 });
 

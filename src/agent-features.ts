@@ -5,7 +5,7 @@ import { nativeCommand, NativeHelp } from './commands.ts';
 import type { Store } from './store.ts';
 import type { Inbound, Runtime, RuntimeHooks } from './types.ts';
 
-type Ports = { key(m: Inbound): string; busy(key: string): boolean; send(m: Inbound, text: string): Promise<boolean> };
+type Ports = { workspace: string; key(m: Inbound): string; busy(key: string): boolean; send(m: Inbound, text: string): Promise<boolean> };
 type Run = { key: string; state: AgentState; session?: string; executing: boolean; steering: boolean; abort: AbortController };
 export class AgentFeatures {
   private states = new Map<string, AgentState>();
@@ -16,7 +16,7 @@ export class AgentFeatures {
   state(key: string) { return this.states.get(key); }
   clear(key: string) { this.states.delete(key); }
   begin(m: Inbound) {
-    const key = this.ports.key(m); const state = new AgentState();
+    const key = this.ports.key(m); const state = new AgentState(this.ports.workspace);
     const run: Run = { key, state, executing: false, steering: false, abort: new AbortController() };
     this.current = run; this.states.delete(key); this.states.set(key, state);
     while (this.states.size > 128) this.states.delete(this.states.keys().next().value!);
@@ -28,7 +28,7 @@ export class AgentFeatures {
           text => this.ports.send(m, text));
       },
     };
-    return { hooks,
+    return { hooks, state,
       attach: (session: string) => { run.session = session; run.executing = true; },
       end: () => { run.executing = false; run.abort.abort(); this.interactions.cancel(key); if (this.current === run) this.current = undefined; },
     };
@@ -71,7 +71,7 @@ export class AgentFeatures {
       }
       case 'sessions': {
         const sessions = this.db.sessionHistory(key);
-        await reply(sessions.length ? sessions.map(s => `${s.acp} — ${s.at ? new Date(s.at).toISOString() : '旧会话'}`).join('\n') + '\n\n/resume <会话编号> 选择下次恢复；仅列最近 20 项。' : '当前会话没有可恢复的历史记录。'); break;
+        await reply(sessions.length ? sessions.map(s => `${s.title ? `${s.title}\n` : ''}${s.acp} — ${s.at ? new Date(s.at).toISOString() : '旧会话'}`).join('\n\n') + '\n\n/resume <会话编号> 选择下次恢复；仅列最近 20 项。' : '当前会话没有可恢复的历史记录。'); break;
       }
       case 'resume':
         if (this.ports.busy(key)) { await reply('当前会话有执行中或排队任务，请完成或取消后切换。'); break; }

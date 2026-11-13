@@ -55,7 +55,7 @@ export class AcpRuntime implements Runtime {
     const notification = ({ sessionId, update: u }: SessionNotification) => {
       if (!activeSession) {
         // History is never forwarded; retain only latest setup metadata per session.
-        if (['config_option_update', 'available_commands_update', 'current_mode_update'].includes(u.sessionUpdate)) {
+        if (['config_option_update', 'available_commands_update', 'current_mode_update', 'session_info_update'].includes(u.sessionUpdate)) {
           const key = `${sessionId}:${u.sessionUpdate}`;
           if (!pending.has(key) && pending.size >= 96) pending.delete(pending.keys().next().value!);
           pending.set(key, { sessionId, update: u });
@@ -75,7 +75,7 @@ export class AcpRuntime implements Runtime {
         }
       }
       if (u.sessionUpdate === 'config_option_update') { config = u.configOptions; hooks.onEvent?.({ type: 'config', options: config }); }
-      if (u.sessionUpdate === 'available_commands_update' || (live && ['tool_call', 'tool_call_update', 'plan', 'usage_update'].includes(u.sessionUpdate))) {
+      if (['available_commands_update', 'session_info_update'].includes(u.sessionUpdate) || (live && ['tool_call', 'tool_call_update', 'plan', 'usage_update'].includes(u.sessionUpdate))) {
         hooks.onEvent?.({ type: 'update', update: u });
       }
       if (live && u.sessionUpdate === 'agent_message_chunk' && u.content.type === 'text') update(u.content.text);

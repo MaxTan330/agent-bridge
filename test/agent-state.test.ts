@@ -1,6 +1,29 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { AgentState } from '../src/agent-state.ts';
+import { resolve } from 'node:path';
+
+test('change summaries require completed tools and distinguish same-named project files', () => {
+  const workspace = resolve('project');
+  const state = new AgentState(workspace);
+  const preview = (toolCallId: string, path: string) => state.apply({ type: 'update', update: {
+    sessionUpdate: 'tool_call', toolCallId, status: 'pending', content: [{ type: 'diff', path }],
+  } });
+  const finish = (toolCallId: string, status: string) => state.apply({ type: 'update', update: {
+    sessionUpdate: 'tool_call_update', toolCallId, status,
+  } });
+  preview('failed', 'discarded.ts');
+  preview('source', resolve(workspace, 'src/config.ts'));
+  preview('test', 'test/config.ts');
+  preview('outside', resolve(workspace, '../private/notes.txt'));
+  assert.equal(state.changeSummary(), '');
+  finish('failed', 'failed');
+  finish('source', 'completed'); finish('test', 'completed'); finish('outside', 'completed');
+  assert.match(state.changeSummary(), /src\/config\.ts/);
+  assert.match(state.changeSummary(), /test\/config\.ts/);
+  assert.match(state.changeSummary(), /- notes\.txt/);
+  assert.doesNotMatch(state.changeSummary(), /discarded|private/);
+});
 
 test('agent state merges partial tool updates and renders actual plan and usage', () => {
   const state = new AgentState();

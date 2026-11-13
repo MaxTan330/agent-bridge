@@ -1,13 +1,18 @@
 /** 有界的运行时事件投影；不保存工具输入、输出、凭据或模型思考。 */
 import type { RuntimeEvent } from './types.ts';
+import { basename, isAbsolute, relative, resolve, sep, win32 } from 'node:path';
 
 export const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const text = (value: unknown, max = 240) => typeof value === 'string' ? Array.from(value).slice(0, max).join('') : '';
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
-type Tool = { title: string; status: string };
+type Tool = { title: string; status: string; files: Set<string> };
 
 export class AgentState {
+  private readonly workspace?: string;
+  constructor(workspace?: string) { this.workspace = workspace; }
   tools = new Map<string, Tool>();
+  title?: string;
+  private diffFiles = new Set<string>();
   private commands: { name: string; description: string }[] = [];
   private plan: { content: string; status: string }[] = [];
   private usage?: { used: number; size: number; amount?: number; currency: string };
@@ -18,6 +23,9 @@ export class AgentState {
     if (event.type === 'config') { this.config(event.options); return; }
     const u = event.update;
     switch (u.sessionUpdate) {
+      case 'session_info_update':
+        if (typeof u.title === 'string') this.title = text(u.title.replace(/\s+/g, ' ').trim(), 120);
+        break;
       case 'available_commands_update':
         this.commands = list(u.availableCommands).slice(0, 100).map(object).map(c => ({ name: text(c.name, 80), description: text(c.description) })); break;
       case 'config_option_update': this.config(list(u.configOptions)); break;
@@ -25,7 +33,20 @@ export class AgentState {
         const id = text(u.toolCallId, 200); if (!id) return;
         const previous = this.tools.get(id);
         this.tools.delete(id);
-        this.tools.set(id, { title: text(u.title) || previous?.title || '工具', status: text(u.status, 50) || previous?.status || 'pending' });
+        const status = text(u.status, 50) || previous?.status || 'pending';
+        const files = previous?.files ?? new Set<string>();
+        for (const raw of list(u.content)) {
+          if (files.size >= 20) break;
+          const item = object(raw);
+          if (item.type !== 'diff' || typeof item.path !== 'string') continue;
+          const name = this.displayPath(item.path);
+          if (name) files.add(name);
+        }
+        if (status === 'completed') for (const name of files) {
+          if (this.diffFiles.size >= 20) break;
+          this.diffFiles.add(name);
+        }
+        this.tools.set(id, { title: text(u.title) || previous?.title || '工具', status, files });
         while (this.tools.size > 30) this.tools.delete(this.tools.keys().next().value!);
         break;
       }
@@ -37,6 +58,17 @@ export class AgentState {
         break;
       }
     }
+  }
+  private displayPath(path: string) {
+    let name = basename(path.replace(/\\/g, '/'));
+    if (this.workspace && !(win32.isAbsolute(path) && !isAbsolute(path))) {
+      const rel = relative(this.workspace, resolve(this.workspace, path));
+      if (rel && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)) name = rel.split(sep).join('/');
+    }
+    return text(name.replace(/[\x00-\x1f\x7f]/g, ''), 240);
+  }
+  changeSummary() {
+    return this.diffFiles.size ? `ACP 报告的文件变更（最多 20 项）：\n${[...this.diffFiles].map(name => `- ${name}`).join('\n')}` : '';
   }
   private config(values: unknown[]) {
     this.options = values.slice(0, 30).map(object).map(o => ({ id: text(o.id, 80), name: text(o.name, 80), value: text(o.currentValue, 120),

@@ -77,7 +77,7 @@ test('the two-hour execution deadline cancels and releases the session', async t
     assert.ok(f.bridge.active); assert.equal(f.stops(), 0);
     t.mock.timers.tick(1); await run;
     assert.equal(f.bridge.active, undefined); assert.ok(f.stops() > 0);
-    assert.match(f.db.latestResult(f.bridge.key(message))!.text, /取消/);
+    assert.match(f.db.latestResult(f.bridge.key(message))!.text, /达到执行时限/);
   } finally { f.finish(); await run; await f.bridge.stop(); f.db.close(); t.mock.timers.reset(); }
 });
 

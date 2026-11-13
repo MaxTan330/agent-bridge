@@ -29,7 +29,10 @@ export class Store {
     if (!columns.some(column => column.name === 'last_used_at')) this.db.exec('ALTER TABLE sessions ADD COLUMN last_used_at INTEGER');
     this.db.exec(`CREATE TABLE IF NOT EXISTS session_history (owner TEXT NOT NULL, acp TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(owner,acp));
       CREATE TABLE IF NOT EXISTS session_preferences (owner TEXT PRIMARY KEY, value TEXT NOT NULL);
-      INSERT OR IGNORE INTO session_history SELECT id,acp,COALESCE(last_used_at,0) FROM sessions;`);
+      INSERT OR IGNORE INTO session_history(owner,acp,at) SELECT id,acp,COALESCE(last_used_at,0) FROM sessions;`);
+    if (!this.db.prepare('PRAGMA table_info(session_history)').all().some(column => column.name === 'title')) {
+      this.db.exec('ALTER TABLE session_history ADD COLUMN title TEXT');
+    }
     // 进程已丢失，历史会话无法证明工具执行到哪一步；重启只标记中断，不重放任务。
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -120,7 +123,7 @@ export class Store {
     try {
       const now = Date.now();
       this.db.prepare('INSERT OR REPLACE INTO sessions(id,acp,last_used_at) VALUES (?,?,?)').run(id, acp, now);
-      this.db.prepare('INSERT OR REPLACE INTO session_history(owner,acp,at) VALUES (?,?,?)').run(id, acp, now);
+      this.db.prepare('INSERT INTO session_history(owner,acp,at) VALUES (?,?,?) ON CONFLICT(owner,acp) DO UPDATE SET at=excluded.at').run(id, acp, now);
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
@@ -130,8 +133,11 @@ export class Store {
     this.db.prepare('UPDATE session_history SET at=? WHERE owner=? AND acp=?').run(Date.now(), id, acp);
   }
   /** 只列出 Bridge 能证明归属的历史，不能直接列共享 Claude 目录。 */
-  sessionHistory(owner: string): { acp: string; at: number }[] {
-    return this.db.prepare('SELECT acp,at FROM session_history WHERE owner=? ORDER BY at DESC,rowid DESC LIMIT 20').all(owner) as { acp: string; at: number }[];
+  setSessionTitle(owner: string, acp: string, title: string) {
+    this.db.prepare('UPDATE session_history SET title=? WHERE owner=? AND acp=?').run(title || null, owner, acp);
+  }
+  sessionHistory(owner: string): { acp: string; at: number; title: string | null }[] {
+    return this.db.prepare('SELECT acp,at,title FROM session_history WHERE owner=? ORDER BY at DESC,rowid DESC LIMIT 20').all(owner) as { acp: string; at: number; title: string | null }[];
   }
   resumeSession(owner: string, acp: string): boolean {
     if (!this.db.prepare('SELECT 1 FROM session_history WHERE owner=? AND acp=?').get(owner, acp)) return false;

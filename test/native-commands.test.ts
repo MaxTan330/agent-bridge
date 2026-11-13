@@ -22,6 +22,26 @@ function fixture() {
     finish: () => finish(), async close() { await bridge.stop(); db.close(); } };
 }
 
+test('ACP metadata survives in task results and owner-scoped session history', async () => {
+  const f = fixture(); const running = f.bridge.handle(message);
+  try {
+    await nextTurn();
+    f.hooks().onEvent?.({ type: 'update', update: { sessionUpdate: 'session_info_update', title: '修复构建' } });
+    f.hooks().onEvent?.({ type: 'update', update: { sessionUpdate: 'tool_call_update', toolCallId: 'edit', status: 'completed', content: [
+      { type: 'diff', path: '/private/project/build.ts', oldText: 'private-content', newText: 'new-content' },
+    ] } });
+    f.finish(); await running;
+    await f.command('/result');
+    assert.match(f.sent.at(-1)!, /build\.ts/);
+    assert.doesNotMatch(f.sent.at(-1)!, /\/private|private-content|new-content/);
+    await f.command('/resume native');
+    await f.command('/sessions');
+    assert.match(f.sent.at(-1)!, /修复构建/);
+    await f.command('/sessions', 'v');
+    assert.doesNotMatch(f.sent.at(-1)!, /修复构建/);
+  } finally { await f.close(); }
+});
+
 test('native queries and steering bypass full queue while preserving owner isolation', async () => {
   const f = fixture(); const running = f.bridge.handle(message);
   try {

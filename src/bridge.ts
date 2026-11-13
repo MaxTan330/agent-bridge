@@ -73,7 +73,7 @@ export class Bridge {
   constructor(db: Store, runtime: Runtime, channel: Channel, options: Options, log: DiagnosticLogger = pino({ enabled: false })) {
     this.db = db; this.runtime = runtime; this.options = options;
     this.channel = channel; this.log = log;
-    this.features = new AgentFeatures(db, runtime, { key: m => this.key(m), send: (m, text) => this.send(m, text),
+    this.features = new AgentFeatures(db, runtime, { workspace: options.workspace, key: m => this.key(m), send: (m, text) => this.send(m, text),
       busy: key => !!(this.active && this.key(this.active.message) === key) || this.queue.some(entry => this.key(entry.message) === key) });
   }
   /** 会话键：应用+聊天+话题+用户+工作区；不同用户/话题不共享 Agent 会话。 */
@@ -329,8 +329,15 @@ export class Bridge {
       progressDelivery = this.taskReply(m, { id, state: TaskState.Running, text, note }).then(() => {}).finally(() => { sending = false; });
     }, TaskLimits.ProgressIntervalMs);
     // 这是包含初始化的总执行时限；长时间无文字输出不会单独触发取消。
-    const deadline = setTimeout(() => { void this.cancel().catch(error => this.report(error, 'timeout-cancel', id)); }, this.options.taskTimeout);
-    let status: TaskReply['state'] = TaskState.Failed; let result = '任务失败，未自动重试。请检查运行环境或使用 /new 后重试。';
+    let timedOut = false;
+    let promptStarted = false;
+    const deadline = setTimeout(() => {
+      if (a.cancelled) return;
+      timedOut = true;
+      void this.cancel().catch(error => this.report(error, 'timeout-cancel', id));
+    }, this.options.taskTimeout);
+    const cancellationText = () => timedOut ? '任务达到执行时限，已停止。' : '任务已取消。';
+    let status: TaskReply['state'] = TaskState.Failed; let result = '任务未正常完成。';
     let featureRun: ReturnType<AgentFeatures['begin']> | undefined;
     this.log.info({ task: id, stage: TaskState.Running }, 'Task started');
     // ── 执行：恢复或新建会话 → 免审批模式 → 一次 prompt；文本增量经回调进入 output ──
@@ -361,11 +368,12 @@ export class Bridge {
       if (a.cancelled) throw new Error('cancelled');
       a.phase = TaskPhase.Executing;
       featureRun.attach(a.session);
+      promptStarted = true;
       const reason = await this.runtime.prompt(a.session, m.text, attachments);
       a.cancelled ||= reason === StopReason.Cancelled;
       status = a.cancelled ? TaskState.Cancelled : reason === StopReason.EndTurn ? TaskState.Completed : TaskState.Failed;
-      result = snapshot() || (a.cancelled ? '任务已取消。' : '没有文本输出。');
-      if (a.cancelled && output) result += '\n\n（任务已取消，以上为部分输出。）';
+      result = snapshot() || (a.cancelled ? cancellationText() : '没有文本输出。');
+      if (a.cancelled && output) result += `\n\n（${cancellationText()}以上为部分输出。）`;
       if (status === TaskState.Failed) {
         const explanation = incompleteReasonText(reason);
         result = output ? `${snapshot()}\n\n（${explanation}以上为部分输出。）` : explanation;
@@ -374,8 +382,11 @@ export class Bridge {
       // 取消、超时与执行异常在此统一收敛为终态与用户可读文本。
       this.report(error, 'execute', id);
       status = a.cancelled ? TaskState.Cancelled : TaskState.Failed;
-      if (a.cancelled) result = '任务已取消或超时。';
+      if (a.cancelled) result = cancellationText();
       else if (error instanceof AttachmentError) result = error.message;
+      else if (promptStarted) result = '运行中断，任务未正常完成。请检查工作区中的已有改动，再决定是否重试。';
+      else result = '任务准备失败，尚未发送给 Claude。请检查运行环境后重新发送。';
+      if (output) result = `${snapshot()}\n\n（${result}以上为部分输出。）`;
     } finally {
       // 进程清理和结果落盘后交接工作区，飞书投递独立收尾。
       clearTimeout(deadline); clearInterval(progress); clearTimeout(noticeTimer);
@@ -386,11 +397,19 @@ export class Bridge {
         if (a.cancelled || status === TaskState.Failed) await this.stopRuntime(a);
       } catch (error) {
         this.fatal(error, 'cleanup', id);
-        status = TaskState.Failed; result = '运行进程清理失败，服务已停止接收新任务，请检查服务。';
+        status = TaskState.Failed;
+        result += '\n\n运行进程清理失败，服务已停止接收新任务，请检查服务。';
       }
+      const changes = featureRun?.state.changeSummary();
+      if (changes) result += `\n\n${changes}`;
       try { this.db.complete(id, status, result); } catch (error) { this.report(error, 'save-result', id); }
       if (a.session) {
-        try { this.db.touchSession(this.key(m), a.session); } catch (error) { this.report(error, 'touch-session', id); }
+        try {
+          const key = this.key(m);
+          this.db.touchSession(key, a.session);
+          const title = featureRun?.state.title;
+          if (title !== undefined) this.db.setSessionTitle(key, a.session, title);
+        } catch (error) { this.report(error, 'touch-session', id); }
       }
       a.phase = TaskPhase.Delivering;
       this.delivering.add(a);
