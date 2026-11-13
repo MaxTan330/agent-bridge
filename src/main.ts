@@ -31,6 +31,16 @@ async function main() {
     if (closing) return; closing = true;
     startup.abort(); await cleanup(); log.info('AgentBridge stopped');
   };
+  const onFatal = () => {
+    if (closing) return;
+    process.exitCode = 1;
+    // Adapter 无法退出时，给结果投递留出时间，再让部署环境接管重启。
+    const deadline = setTimeout(() => process.exit(1), 40000);
+    void stop().catch(error => {
+      log.error({ ...errorFacts(error), stage: 'shutdown' }, 'Shutdown failed');
+      process.exit(1);
+    }).finally(() => clearTimeout(deadline));
+  };
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { void stop().catch(error => { log.error({ ...errorFacts(error), stage: 'shutdown' }, 'Shutdown failed'); process.exitCode = 1; }); });
   try {
     const checkOnly = process.argv.includes('--check');
@@ -54,12 +64,14 @@ async function main() {
       replyMode: c.TASK_REPLY_MODE,
       backgroundNoticeMs: c.TASK_BACKGROUND_NOTICE_MS,
       sessionIdleMs: c.SESSION_IDLE_TIMEOUT_MS,
+      onFatal,
     }, log);
-    cleanup = async () => { channel.stop(); await bridge.stop(); db.close(); };
-    await channel.start(m => bridge.handle(m), { onFatal: () => {
-      process.exitCode = 1;
-      void stop().catch(error => { log.error({ ...errorFacts(error), stage: 'shutdown' }, 'Shutdown failed'); });
-    } });
+    cleanup = async () => {
+      channel.stop();
+      try { await bridge.stop(); }
+      finally { db.close(); }
+    };
+    await channel.start(m => bridge.handle(m), { onFatal });
     startup.signal.throwIfAborted();
     log.info({ version }, 'AgentBridge started');
   } catch (error) {

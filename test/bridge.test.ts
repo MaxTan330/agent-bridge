@@ -152,13 +152,13 @@ test('final delivery retries transient failures without rerunning the agent', as
 });
 
 test('cleanup failure stops new task acceptance and still releases shutdown waiters', async () => {
-  const db = new Store(':memory:'); let prompts = 0;
+  const db = new Store(':memory:'); let prompts = 0; let fatal = 0;
   const rt: Runtime = { async open() { return 's'; }, async prompt() { prompts++; throw new Error('crash'); }, async cancel() {}, async stop() { throw new Error('cannot kill'); } };
   const b = new Bridge(db, rt, { async send() {} },
-    { users:['u'],admins:[],workspace:'w',taskTimeout:1000,cancelGrace:10 });
+    { users:['u'],admins:[],workspace:'w',taskTimeout:1000,cancelGrace:10,onFatal: () => { fatal++; } });
   const m={account:'a',chat:'c',thread:'',user:'u',id:'cleanup-fail',text:'go'};
   await b.handle(m); assert.equal(b.active, undefined); assert.equal(b.stopping, true);
-  await b.handle({...m,id:'next'}); assert.equal(prompts,1); db.close();
+  await b.handle({...m,id:'next'}); assert.equal(prompts,1); assert.equal(fatal,1); db.close();
 });
 
 test('bridge rejects unauthorized users, deduplicates and isolates user sessions', async () => {

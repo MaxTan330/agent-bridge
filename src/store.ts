@@ -37,6 +37,8 @@ export class Store {
         .run('服务重启，排队任务已中断且未执行，请重新发送。', DeliveryState.Pending, TaskState.Queued);
       this.db.prepare('UPDATE tasks SET status=?,at=? WHERE status IN (?,?)')
         .run(TaskState.Interrupted, Date.now(), TaskState.Running, TaskState.Queued);
+      // 重启后已无在途投递，待发送结果可通过 /result failed 找回。
+      this.db.prepare('UPDATE results SET delivery=? WHERE delivery=?').run(DeliveryState.Failed, DeliveryState.Pending);
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     // 中断标记先刷新 at，随后的按期清理不会删除刚被标记的等待项。

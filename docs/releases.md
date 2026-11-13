@@ -19,7 +19,7 @@ flowchart LR
 
 ## 一次性设置
 
-Release Please Action 固定为官方 `v5.0.0` 的提交 SHA，使用 Node 24 的 Action 运行时；这是 GitHub runner 执行 Action 的版本，与应用及 Docker 镜像使用的 Node 26 独立。升级依据见 [官方 v5 发布说明](https://github.com/googleapis/release-please-action/releases/tag/v5.0.0)。Action 升级不替代后续的仓库权限设置。
+Release Please Action 固定为官方 `v5.0.0` 的提交 SHA，使用 Node 24 的 Action 运行时；这是 GitHub runner 执行 Action 的版本，应用的运行要求由 `package.json` 定义。升级依据见 [官方 v5 发布说明](https://github.com/googleapis/release-please-action/releases/tag/v5.0.0)。Action 升级不替代后续的仓库权限设置。
 
 1. 将工作流及配置合并到 `main`，启用 GitHub Actions。
 2. 在 Settings → Actions → General 中允许 GitHub Actions 创建 Pull Request。工作流为 Release Please 声明 `contents: write`、`issues: write`、`pull-requests: write`，为 GHCR 发布声明 `packages: write`；签名 job 及调用方还声明 `id-token: write`，用于获取 OIDC 身份。组织策略也需允许这些操作。

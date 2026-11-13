@@ -136,7 +136,7 @@ docker compose exec agentbridge printenv WORKSPACE_ROOT WORKSPACE_PROJECT
 
 Dockerfile 分为基础工具、依赖安装、ncc 构建、生产依赖裁剪和最终运行五阶段。最终镜像包含 dist、生产 node_modules、Node/npm、pnpm 12.14.0、Bash、Git、SSH 客户端、curl、ripgrep、CA 和时区数据；不包含 Bridge 源码、TypeScript 或 ncc。pnpm 留在运行镜像供 Agent 安装和测试项目依赖。没有预装 Python/Go/编译器、浏览器或 AWS CLI，项目需要时扩展镜像。Claude 由 ACP 的 SDK 依赖启动，不额外全局安装另一个 Claude CLI。SSH 客户端已安装，但不内置 SSH 密钥或私有仓库凭证。
 
-参考其他项目的镜像源约定，默认 npm/pnpm 使用 npmmirror、apt 使用阿里云、时区为 Asia/Shanghai。Compose 将 `NPM_REGISTRY` 同时传入 Docker 构建参数和容器运行环境，控制构建阶段及 Agent 内的 npm/pnpm；`BASE_IMAGE`、`DEBIAN_MIRROR` 只作为构建参数传入，可在 shell 或 `.env` 中覆盖。修改构建参数后执行 `docker compose up -d --build`。也可使用 `docker build --build-arg NPM_REGISTRY=https://registry.npmjs.org -t agent-bridge:local .` 单独构建。`BASE_IMAGE` 必须是 Node 26 Debian bookworm 基底；现有自研 Node Alpine 镜像不适用于这里的 apt/glibc 配置。
+参考其他项目的镜像源约定，默认 npm/pnpm 使用 npmmirror、apt 使用阿里云、时区为 Asia/Shanghai。Compose 将 `NPM_REGISTRY` 同时传入 Docker 构建参数和容器运行环境，控制构建阶段及 Agent 内的 npm/pnpm；`BASE_IMAGE`、`DEBIAN_MIRROR` 只作为构建参数传入，可在 shell 或 `.env` 中覆盖。修改构建参数后执行 `docker compose up -d --build`。也可使用 `docker build --build-arg NPM_REGISTRY=https://registry.npmjs.org -t agent-bridge:local .` 单独构建。`BASE_IMAGE` 必须使用符合 `package.json` 中 `engines.node` 要求的 Debian bookworm 基底；现有自研 Node Alpine 镜像不适用于这里的 apt/glibc 配置。
 
 ## 环境注入与网关
 

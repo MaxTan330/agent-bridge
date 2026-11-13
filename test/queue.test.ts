@@ -33,6 +33,32 @@ function fixture(queueLimit = 20) {
     async close() { await bridge.stop(); db.close(); } };
 }
 
+test('queued cancellation is persisted before acknowledgement and confirmed after it', async () => {
+  const f = fixture();
+  const original = f.bridge.channel.send.bind(f.bridge.channel);
+  const { promise, resolve } = Promise.withResolvers<void>();
+  f.bridge.channel.send = async (m, text) => {
+    if (text.includes('已加入队列')) await promise;
+    await original(m, text);
+  };
+  const first = f.bridge.handle(message);
+  try {
+    await nextTurn();
+    const enqueue = f.bridge.handle({ ...message, id: 'second' });
+    const queued = f.queued()[0];
+    const cancel = f.bridge.handle({ ...message, id: 'cancel-all', text: '/cancel all' });
+    await nextTurn();
+    assert.equal(f.db.taskStatus(queued.id), 'cancelled');
+    assert.equal(f.sent.length, 0);
+    resolve();
+    await Promise.all([enqueue, cancel]);
+    assert.match(f.sent[0].text, /已加入队列/);
+    assert.match(f.sent[1].text, /已取消 1 项/);
+    f.finish(); await first;
+    assert.deepEqual(f.prompts, ['first']);
+  } finally { resolve(); await f.close(); }
+});
+
 test('busy messages execute FIFO once after cleanup, preserving session context', async () => {
   const f = fixture(); const first = f.bridge.handle(message);
   try {

@@ -90,7 +90,7 @@ stateDiagram-v2
 
 服务通过飞书 WebSocket 接收消息，由外部 Claude ACP 进程执行任务。默认短任务直接回复，长任务先发送后台通知再返回结果；stream 模式使用 Typing 表情和原位更新的 Markdown 卡片。当前仅支持一个飞书应用、一个固定项目、一个服务实例。工作区内的任务串行执行，忙时按接收顺序排队，默认最多 20 个等待项。飞书投递可以与下一项执行重叠。
 
-运行要求为 Node.js 26，见 [package.json](../package.json)。使用 TypeScript、ACP SDK、飞书 SDK、Pino、Zod 和 Node 内置 SQLite。模块由构造函数注入依赖，不引入 @maxtan/nest-core：当前没有 HTTP 管理接口、Web 鉴权或 Redis 等需要该框架承载的入口。
+Node.js 运行要求见 [package.json](../package.json) 的 `engines.node`。使用 TypeScript、ACP SDK、飞书 SDK、Pino、Zod 和 Node 内置 SQLite。模块由构造函数注入依赖，不引入 @maxtan/nest-core：当前没有 HTTP 管理接口、Web 鉴权或 Redis 等需要该框架承载的入口。
 
 尚未实现 Git worktree、文件系统隔离、多项目 ACL、多任务并发、其他消息渠道和管理 API。附件支持范围为图片和 UTF-8 文本文件。
 
@@ -183,7 +183,7 @@ flowchart TD
 5. 若有会话映射且 Agent 声明支持 loadSession，则尝试恢复；恢复失败改建新会话。新旧会话 ID 不同时在结果卡片附注说明，不能仅凭数据库映射宣称上下文已恢复。
 6. 建立权限模式后保存会话 ID，再发送一次 prompt；发送结果失败不会重放 prompt。
 7. 仅 stopReason 为 end_turn 时标记 completed；取消响应标记 cancelled，达到执行或输出限制、模型拒绝、未知结束原因及执行异常标记 failed。非正常结束响应保留部分输出并附原因，随结果持久化，供 /result 取回。取消和失败路径等待运行进程清理。清理失败时停止接受新消息，并保留运行进程句柄以便再次清理。
-8. 执行结束后，取消或失败路径先清理 Adapter；随后在同一事务中保存终态与最终文本，刷新会话时间并释放工作区。同步将队首 queued 改为 running 并设置 active，保持 FIFO。入队回执与执行并行，最终回复等待本任务的回执及在途进度消息。不同任务的飞书回复可并行投递。队列启动落库或进程清理失败时停止调度并中断剩余队列。
+8. 执行结束后，取消或失败路径先清理 Adapter；随后在同一事务中保存终态与最终文本，刷新会话时间并释放工作区。同步将队首 queued 改为 running 并设置 active，保持 FIFO。入队回执与执行并行，最终回复等待本任务的回执及在途进度消息。不同任务的飞书回复可并行投递。队列启动落库或进程清理失败时停止调度并中断剩余队列。Bridge 通知入口停止服务并以非零状态退出，由部署环境重启实例。
 
 成功任务的 Adapter 暂时保持驻留，下一任务 open 时重建进程，或在停机及全局闲置满 SESSION_IDLE_TIMEOUT_MS（默认 4 小时）时清理。执行中和队列非空时不执行空闲进程回收；新任务等待已开始的空闲清理完成再 open，防止新进程被旧清理终止。子进程 stdout 用于 ACP，stderr 被消费但不写入业务日志。初始化、新建、恢复、设置模式的单次请求上限各为 30 秒；prompt 由整体任务超时控制。
 
@@ -206,7 +206,7 @@ SQLite 开启 WAL，busy_timeout 为 5 秒。使用 CREATE TABLE IF NOT EXISTS �
 | tasks | 任务 ID、会话键、消息去重键、状态和时间；新建进入 running 或 queued |
 | results | 任务 ID、最终发送文本、pending/sent/failed 投递状态、投递轮次数 attempts |
 
-tasks 使用 queued/running/completed/failed/cancelled/interrupted。启动在同一事务内为遗留 queued 任务保存“重启中断且未执行”的结果，并将 queued/running 改为 interrupted（同时刷新 at，保留期从最后一次状态变更计算）；不自动重放任务或补发结果。对历史 running 任务仍不虚构执行结果。正常停止时先从内存移走全部等待项并同步记录 interrupted 结果，再尽力发送通知。取消排队任务保存 cancelled 结果。
+tasks 使用 queued/running/completed/failed/cancelled/interrupted。启动在同一事务内为遗留 queued 任务保存“重启中断且未执行”的结果，并将 queued/running 改为 interrupted（同时刷新 at，保留期从最后一次状态变更计算）；不自动重放任务或补发结果。启动时把遗留 pending 结果标记为 failed，供 /result failed 取回。对历史 running 任务仍不虚构执行结果。正常停止时先从内存移走全部等待项并同步记录 interrupted 结果，再尽力发送通知。取消排队任务保存 cancelled 结果。
 
 /result 按会话键和结果写入顺序查询最近已保存结果，可能是当前运行任务之前的结果；取消较晚提交的排队任务不会遮住随后完成的当前任务答案。带任务编号时按同一会话键精确查找；failed 按写入顺序查找投递失败的结果。每次完整结果投递结束后 attempts 加一，含用户重取。任一次投递成功即保留 sent 状态。回复正文与任务终态同事务保存（会话恢复附注仅用于本次任务投递）；若数据库不可写，则记录错误并尽力发送，不能保证结果持久化。
 
@@ -286,7 +286,7 @@ CardKit 创建或正文更新失败，或卡片引用发送被 API 明确永久�
 | NPM_REGISTRY | Compose 同时用于构建参数和运行环境的 npm/pnpm 源，默认 npmmirror |
 | BASE_IMAGE / DEBIAN_MIRROR | 仅构建参数；Compose 从部署环境读取并传给 Dockerfile，也可通过 docker build --build-arg 传入 |
 
-Agent 子进程仅获得运行所需的系统路径、临时目录、HOME/USERPROFILE、大小写代理变量、LANG/LANGUAGE/LC_*/TZ、ANTHROPIC_*、CLAUDE_CONFIG_DIR、CLAUDE_CODE_SUBAGENT_MODEL 和 npm_config_registry（变量名大小写均可）；不透传飞书密钥、NPM_TOKEN 或其他云凭证。当前使用 Anthropic 兼容端点，不支持通过进程环境启用 Bedrock/Vertex/Foundry。此处只约束环境变量，不是操作系统隔离：项目 cwd、白名单和同容器非 root 均不能阻止 Agent 访问其他可读文件。所有白名单用户必须被授权访问固定项目。
+Agent 子进程仅获得运行所需的系统路径、临时目录、HOME/USERPROFILE、Windows 的 APPDATA/LOCALAPPDATA/SYSTEMDRIVE、自定义 CA 的 NODE_EXTRA_CA_CERTS/SSL_CERT_FILE/SSL_CERT_DIR、大小写代理变量、LANG/LANGUAGE/LC_*/TZ、ANTHROPIC_*、CLAUDE_CONFIG_DIR、CLAUDE_CODE_SUBAGENT_MODEL 和 npm_config_registry（变量名大小写均可）；不透传飞书密钥、NPM_TOKEN 或其他云凭证。当前使用 Anthropic 兼容端点，不支持通过进程环境启用 Bedrock/Vertex/Foundry。此处只约束环境变量，不是操作系统隔离：项目 cwd、白名单和同容器非 root 均不能阻止 Agent 访问其他可读文件。所有白名单用户必须被授权访问固定项目。
 
 自定义网关通过 ANTHROPIC_BASE_URL 配置。省略时由 Claude 设置及默认行为决定路由，可能使用 Anthropic 官方 API。ANTHROPIC_API_KEY 对应 x-api-key、ANTHROPIC_AUTH_TOKEN 对应 Bearer，选用网关要求的认证方式。ANTHROPIC_MODEL 为主模型，ANTHROPIC_DEFAULT_SONNET_MODEL/OPUS_MODEL/HAIKU_MODEL 可映射别名，CLAUDE_CODE_SUBAGENT_MODEL 指定子 Agent 默认模型。Adapter 读取 user/project/local 设置，settings 的 env 可能覆盖进程中的网关地址、模型及认证变量。Bridge 当前只校验和传递进程环境。部署需核对 Claude 设置，并在网关侧确认实际路由。--check 仅在配置网关地址时校验其格式。模型鉴权、网络连通性和目录写入需要单独验证。
 
@@ -300,7 +300,7 @@ Agent 子进程仅获得运行所需的系统路径、临时目录、HOME/USERPR
 
 构建链路为 TypeScript 输出 .build → scripts/entry.cjs → ncc → dist/index.cjs。CommonJS 边界兼容飞书 SDK 的 __dirname。交付整个 dist 目录，包含 ncc 生成的 worker 资源。Claude ACP 作为外部子进程依赖保留在生产 node_modules，不能仅交付单个 JS 文件。
 
-[Dockerfile](../Dockerfile) 默认使用 node:26.13.0-bookworm-slim，BASE_IMAGE 可替换为兼容的 Node 26 Debian bookworm 内部镜像。分 base、dependencies、build、production-dependencies、runtime 五阶段；runtime 包含 dist 及外部 Adapter 生产依赖，以 node 用户运行，不包含 Bridge 源码、TypeScript、ncc。镜像保留 Debian/glibc，不直接使用 Alpine Node 镜像；Claude 使用 SDK 的平台二进制，不另装全局 CLI。镜像内预装工具、镜像源和构建参数的清单见[部署指南](deployment.md#镜像内容与构建参数)。
+[Dockerfile](../Dockerfile) 定义默认基础镜像，BASE_IMAGE 可替换为兼容的 Debian bookworm 内部镜像。分 base、dependencies、build、production-dependencies、runtime 五阶段；runtime 包含 dist 及外部 Adapter 生产依赖，以 node 用户运行，不包含 Bridge 源码、TypeScript、ncc。镜像保留 Debian/glibc，不直接使用 Alpine Node 镜像；Claude 使用 SDK 的平台二进制，不另装全局 CLI。镜像内预装工具、镜像源和构建参数的清单见[部署指南](deployment.md#镜像内容与构建参数)。
 
 [compose.yaml](../compose.yaml) 启用 init、unless-stopped、no-new-privileges 并删除 capabilities，不开放入站端口。单个 agent-data 命名卷挂载到 /data，下分 workspace（代码）、bridge（SQLite 和飞书绑定）、claude（Claude 配置与历史）三个目录；不绑定宿主机代码目录时，项目在容器内 clone 或创建。Compose 固定 WORKSPACE_ROOT=/data/workspace、DATABASE_PATH=/data/bridge/agentbridge.db、HOME=/home/node、CLAUDE_CONFIG_DIR=/data/claude，以覆盖 .env 中用于本地开发的路径；WORKSPACE_PROJECT 从部署环境读取，默认 .，最终 Agent cwd 与 ACP new/load cwd 均为 /data/workspace 下选中的绝对真实路径，Bridge 自身 cwd 保持 /app。Compose 显式映射模型、认证和超时变量，未列出的变量需额外添加 environment 映射；Agent 所需变量再经 runtime 白名单传递，不烘焙入镜像。运行时变量变更需要重建容器，详见[部署指南](deployment.md#环境注入与网关)。只部署一个实例，不支持多个实例共享工作区或数据库。
 
@@ -328,6 +328,6 @@ Agent 子进程仅获得运行所需的系统路径、临时目录、HOME/USERPR
 | 安装的真实 Adapter 协商 | [adapter.test.ts](../test/adapter.test.ts)，不调用模型 |
 | 实际产物启动、模块加载、配置和 Adapter 路径 | [smoke.mjs](../scripts/smoke.mjs)，不连接外部服务 |
 
-本地验证命令为 pnpm typecheck、pnpm test、pnpm build、pnpm test:bundle。当前在 Windows / Node 26.12.0 验证了上述命令，测试覆盖上述行为；workflow 通过 actionlint 静态检查。Linux 清理分支由受控进程组替身验证，实时验证结果以当前提交的 CI 为准。
+本地验证命令为 pnpm typecheck、pnpm test、pnpm build、pnpm test:bundle。上述命令已在 Windows 上验证，测试覆盖上述行为；workflow 通过 actionlint 静态检查。Linux 清理分支由受控进程组替身验证，实时验证结果以当前提交的 CI 为准。
 
 真实飞书扫码注册、收发及卡片点击、模型工具执行与权限设置组合、真实历史会话恢复、代理连通性、Linux 真实进程树清理、Docker 镜像构建运行均未完成验收。扫码注册测试使用模拟授权响应和传输，不创建真实应用。上述限制保留为部署条件，自动测试通过不代表生产验收完成。

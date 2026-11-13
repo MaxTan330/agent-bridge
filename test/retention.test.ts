@@ -16,6 +16,9 @@ test('startup retention removes expired dedup, task, result and history rows and
     const expired = Date.now() - 31 * day;
     db.accept('recent-task', 'session', 'recent-message');
     db.complete('recent-task', TaskState.Completed, 'recent result');
+    db.accept('sent-task', 'session', 'sent-message');
+    db.complete('sent-task', TaskState.Completed, 'sent result');
+    db.delivered('sent-task', true);
     db.saveSession('session', 'acp-recent');
     db.db.prepare('INSERT INTO messages VALUES (?,?)').run('old-message', expired);
     db.db.prepare('INSERT INTO tasks VALUES (?,?,?,?,?)').run('old-task', 'old-session', 'old-message', TaskState.Completed, expired);
@@ -30,7 +33,9 @@ test('startup retention removes expired dedup, task, result and history rows and
       assert.equal(db.taskStatus('old-task'), undefined);
       assert.equal(db.taskStatus('recent-task'), TaskState.Completed);
       assert.equal(db.db.prepare('SELECT COUNT(*) AS n FROM results WHERE task=?').get('old-task')!.n, 0);
-      assert.equal(db.latestResult('session')?.text, 'recent result');
+      assert.equal(db.latestResult('session')?.text, 'sent result');
+      assert.equal(db.latestResult('session', 'failed')?.text, 'recent result');
+      assert.equal(db.resultForTask('session', 'sent-task')?.delivery, 'sent');
       assert.equal(db.latestResult('old-session'), undefined);
       assert.deepEqual(db.sessionHistory('old-session'), []);
       assert.ok(db.sessionHistory('session').some(entry => entry.acp === 'acp-recent'));
