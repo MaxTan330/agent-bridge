@@ -1,6 +1,6 @@
 # Claude 原生能力接入
 
-Bridge 使用现有 Claude ACP 适配器，不额外部署意图分类 LLM。能力以当前进程协商结果为准；协议与适配器版本升级后需重新运行 stdio fixture 和真实会话验收。
+Bridge 使用现有 Claude ACP Adapter，不额外部署意图分类 LLM。能力以当前进程协商结果为准；协议与 Adapter 版本升级后需重新运行 stdio fixture 和真实会话验收。
 
 ## 架构边界
 
@@ -41,7 +41,7 @@ steering 使用 `_session/steering` 的 `idleBehavior: promptRequired`。明确 
 
 飞书图片和文件作为普通任务接纳，繁忙时只排队资源元数据。开始执行后用原消息 ID 和资源 key 下载，图片上限 5 MiB、文本上限 256 KiB，严格校验 UTF-8 和图片签名，取消时销毁下载流。不会把附件写到工作区。支持 PNG/JPEG/GIF/WebP 及 UTF-8 文本，不解析 PDF、Office、压缩包和音视频；当前不解析富文本 post 内嵌附件。图片还要求 Agent 协商 image 能力。已有机器人需补充 im:message:readonly 并发布应用权限，首次扫码创建会申请该权限。
 
-适配器保留原生 `user/project/local` 设置加载来源，因此项目的 `CLAUDE.md`、`.claude/rules/`、`.claude/skills/`、`.claude/agents/`、Hooks 和已配置插件继续由 Claude 管理。Bridge 不复制这些配置，不自动安装插件，不承诺每个交互式终端命令都能在 ACP 中执行。原生命令以 `/commands` 列表为准；Bridge 保留命令优先。
+Adapter 保留原生 `user/project/local` 设置加载来源，因此项目的 `CLAUDE.md`、`.claude/rules/`、`.claude/skills/`、`.claude/agents/`、Hooks 和已配置插件继续由 Claude 管理。Bridge 不复制这些配置，不自动安装插件，不承诺每个交互式终端命令都能在 ACP 中执行。原生命令以 `/commands` 列表为准；Bridge 保留命令优先。
 
 这些项目配置和原生自动记忆属于共享工作区，不能用于保存某个飞书用户的私密信息。聊天上下文的归属隔离不等于项目文件、插件或原生记忆隔离。
 
@@ -80,7 +80,7 @@ maxTurns 和 maxBudgetUsd 交由原生运行时执行。费用是 Claude 的估�
 
 ## 仍需单独接入或验收
 
-会话 fork、检查点恢复、结构化 JSON 结果专用展示、独立后台任务管理、worktree 并行及插件安装管理尚未提供 Bridge 命令。当前进程按单轮任务管理，不能保证 Claude 本轮结束后遗留后台命令继续受到跟踪；不能仅看到 adapter 内部事件名称就声明具备后台任务管理。
+会话 fork、检查点恢复、结构化 JSON 结果专用展示、独立后台任务管理、worktree 并行及插件安装管理尚未提供 Bridge 命令。当前进程按单轮任务管理，不能保证 Claude 本轮结束后遗留后台命令继续受到跟踪；不能仅凭 Adapter 内部事件名称就宣称具备后台任务管理。
 
 原生子 Agent 可由 Claude 使用，其父任务内的工具事件按运行时提供的内容展示；没有开启多个 Bridge 任务并发写共享工作区。自动上下文压缩由 Claude 管理；用户可将运行时公布的 `/compact` 作为普通任务提交，它可能产生模型调用。
 

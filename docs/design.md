@@ -99,7 +99,7 @@ stateDiagram-v2
 | 模块 | 当前职责 |
 |---|---|
 | [main.ts](../src/main.ts) | 校验配置和项目路径、组装实例、启动飞书、响应退出信号 |
-| [bootstrap.ts](../src/bootstrap.ts)、[feishu-registration.ts](../src/feishu-registration.ts) | 首次扫码注册、凭据持久化、使用者绑定、机器人身份查询及终端二维码 |
+| [bootstrap.ts](../src/bootstrap.ts)、[feishu-registration.ts](../src/feishu-registration.ts) | 首次扫码注册、凭据持久化、用户白名单绑定、机器人身份查询及终端二维码 |
 | [config.ts](../src/config.ts)、[workspace.ts](../src/workspace.ts) | 环境变量校验；通过 realpath 确认固定项目为注册根目录内的现存目录 |
 | [feishu.ts](../src/feishu.ts) | 消息归一化、长连接事件与 HTTP 取消 |
 | [bridge.ts](../src/bridge.ts) | 用户鉴权、命令、全局任务互斥、会话映射、进度、结果与取消 |
@@ -132,7 +132,7 @@ flowchart TD
   BF -- 不存在 --> QR["打印二维码与授权链接<br/>registerApp 创建应用"]
   BF -- 损坏或未知版本 --> X
   QR --> SV[保存凭据]
-  BF -- 已保存 --> CK{"brand 为 feishu<br/>且使用者有效?"}
+  BF -- 已保存 --> CK{"brand 为 feishu<br/>且用户有效?"}
   SV --> CK
   CK -- 否 --> X
   CK -- 是 --> BN{"机器人 open_id 已保存?"}
@@ -144,15 +144,15 @@ flowchart TD
 | 当前绑定状态 | `--check` | 正常启动 |
 |---|---|---|
 | 无手动配置、无绑定文件 | 成功并提示需要绑定 | 打印二维码，创建新应用 |
-| 已保存凭据及使用者，仅缺机器人 open_id | 成功并提示需要绑定 | 复用凭据查询机器人，不重新扫码 |
+| 已保存凭据及白名单用户，仅缺机器人 open_id | 成功并提示需要绑定 | 复用凭据查询机器人，不重新扫码 |
 | 完整绑定文件或完整手动配置 | 成功，尚未检查 App ID 格式或远端身份 | 检查 App ID 格式后，使用已有配置启动长连接 |
-| 手动字段不全、绑定文件损坏、Lark 记录，或绑定无使用者且未显式配置 ALLOWED_USERS | 失败 | 失败，不创建替代应用 |
+| 手动字段不全、绑定文件损坏、Lark 记录，或绑定无白名单用户且未显式配置 ALLOWED_USERS | 失败 | 失败，不创建替代应用 |
 
 提示中的“首次正常启动需要绑定”也涵盖仅待查询机器人身份的恢复状态；是否重新扫码由绑定文件是否存在决定。DATABASE_PATH 使用相对路径时，相对于 Bridge 进程 cwd 解析；绑定文件跟随其父目录，与项目 WORKSPACE_ROOT 无关。
 
-任一 FEISHU_APP_ID/FEISHU_APP_SECRET/FEISHU_BOT_OPEN_ID 非空即选择手动模式，必须同时提供这三个字段和非空 ALLOWED_USERS，不能从保存的其他应用补齐使用者。否则读取 SQLite 同目录的 feishu-binding.json；不存在时调用官方 SDK registerApp，终端打印二维码和备用验证链接。默认 createOnly=true 限定创建新应用；FEISHU_SELECT_EXISTING_APP=true 时不传 createOnly，确认页额外提供“选择已有应用”入口，扫码者可改为选择自己名下的已有应用并增量开通同一组 addons（preset=false 的机器人最小基座、六个应用权限：发消息、接收私聊、接收群聊 @、读取消息及附件资源、发送/删除表情回复、CardKit 卡片写入，与消息事件订阅），不申请用户身份权限；选择已有应用时的审批与发布规则以确认页为准。
+任一 FEISHU_APP_ID/FEISHU_APP_SECRET/FEISHU_BOT_OPEN_ID 非空即选择手动模式，必须同时提供这三个字段和非空 ALLOWED_USERS，不能从保存的其他应用补齐白名单用户。否则读取 SQLite 同目录的 feishu-binding.json；不存在时调用官方 SDK registerApp，终端打印二维码和备用验证链接。默认 createOnly=true 限定创建新应用；FEISHU_SELECT_EXISTING_APP=true 时不传 createOnly，确认页额外提供“选择已有应用”入口，扫码者可改为选择自己名下的已有应用并增量开通同一组 addons（preset=false 的机器人最小基座、六个应用权限：发消息、接收私聊、接收群聊 @、读取消息及附件资源、发送/删除表情回复、CardKit 卡片写入，与消息事件订阅），不申请用户身份权限；选择已有应用时的审批与发布规则以确认页为准。
 
-注册返回的应用凭据和扫码用户身份先写入绑定文件，再通过 tenant_access_token 和 bot/v3/info 获取机器人 open_id。写入采用同目录随机临时文件及 rename，POSIX 权限 0600；不打印 App Secret，文件已排除出 Git 和 Docker 构建上下文。文件包含 version、appId、appSecret、brand，以及可选 ownerOpenId/botOpenId。损坏或未知版本停止启动，不创建替代应用。缺少扫码身份时不开放访问，允许显式 ALLOWED_USERS 补足；有扫码身份时该变量也可覆盖允许使用者。
+注册返回的应用凭据和扫码用户身份先写入绑定文件，再通过 tenant_access_token 和 bot/v3/info 获取机器人 open_id。写入采用同目录随机临时文件及 rename，POSIX 权限 0600；不打印 App Secret，文件已排除出 Git 和 Docker 构建上下文。文件包含 version、appId、appSecret、brand，以及可选 ownerOpenId/botOpenId。损坏或未知版本停止启动，不创建替代应用。缺少扫码身份时不开放访问，允许显式 ALLOWED_USERS 补足；有扫码身份时该变量也可覆盖白名单用户。
 
 注册前通过临时探测文件检查绑定目录可写；这不能保证授权成功后磁盘仍可写。只有凭据成功保存后才能保证重启复用。绑定文件的位置随 DATABASE_PATH 的父目录变化，备份包含 App Secret，应按凭据管理；操作侧的恢复与迁移步骤见[使用与运维指南](usage.md#接入飞书)。
 
@@ -216,7 +216,7 @@ SQLite 不保存完整模型历史；Adapter 会话目录需另外持久化。�
 
 new/load 均传入 _meta.claudeCode.options.allowDangerouslySkipPermissions=true。默认返回会话必须声明支持 bypassPermissions，并成功响应 session/set_mode(bypassPermissions)，之后才允许 prompt。用户显式 /mode plan 时要求支持并确认 plan 模式，不退回执行模式。缺少模式、设置失败或运行时切换到非请求模式时终止任务，不退回逐条手动审批。模型及 effort 按原生配置选项验证。settings 同时设置 includeCoAuthoredBy=false、attribution.commit/pr 为空及 sessionUrl=false，不修改 Git 作者。
 
-此部署采用 Claude Code 免审批执行：白名单用户启动的任务可直接在容器用户权限下读写文件和执行命令。Bridge 不逐条代点允许；意外收到 session/request_permission 时直接 cancelled，不发送卡片或等待审批。Bridge 不提供客户端文件/终端 ACP 能力，读写和命令由 Agent 自身工具执行。cwd 不是沙箱，所有使用者必须获授权访问容器可读写的资源。
+此部署采用 Claude Code 免审批执行：白名单用户启动的任务可直接在容器用户权限下读写文件和执行命令。Bridge 不逐条代点允许；意外收到 session/request_permission 时直接 cancelled，不发送卡片或等待审批。Bridge 不提供客户端文件/终端 ACP 能力，读写和命令由 Agent 自身工具执行。cwd 不是沙箱，所有用户必须获授权访问容器可读写的资源。
 
 普通信息问题通过独立 elicitation/create 处理，不能作为工具授权。每个问题绑定任务会话和请求编号，/answer、/skip 不进入任务队列；任务结束和取消会释放等待。完整模块边界、命令及能力限制见 [Claude 原生能力](claude-capabilities.md)。
 

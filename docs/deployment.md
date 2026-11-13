@@ -69,7 +69,7 @@ docker compose up -d
 docker compose logs -f
 ```
 
-上面的 `docker compose build` 构建 Bridge 服务；随后示例中的 clone 用于初始化 Agent 将要操作的业务项目，两者是不同的代码目录。更新 Bridge 源码后执行 `docker compose up -d --build`，重新构建并启动。业务项目 clone 只在首次初始化时执行。私有仓库需先配置容器可用的认证。日常通过 Agent 或 `docker compose exec -w /data/workspace/my-repo agentbridge bash` 操作代码；使用默认 `.` 时工作目录改为 `/data/workspace`。本地直接运行 Node 时，`WORKSPACE_ROOT` 仍填写本机已存在的绝对路径；Compose 固定使用 `/data/workspace`。
+上述 `docker compose build` 构建 Bridge 服务；随后示例中的 clone 用于初始化 Agent 将要操作的业务项目，两者是不同的代码目录。更新 Bridge 源码后执行 `docker compose up -d --build`，重新构建并启动。业务项目 clone 只在首次初始化时执行。私有仓库需先配置容器可用的认证。日常通过 Agent 或 `docker compose exec -w /data/workspace/my-repo agentbridge bash` 操作代码；使用默认 `.` 时工作目录改为 `/data/workspace`。本地直接运行 Node 时，`WORKSPACE_ROOT` 仍填写本机已存在的绝对路径；Compose 固定使用 `/data/workspace`。
 
 普通重建容器或 `docker compose down` 会保留命名卷；`docker compose down -v` 会删除包括代码在内的持久数据。卷默认跟随 Compose 项目名，部署时保持项目名稳定，避免切换到另一组空卷。备份、迁移和跨主机恢复见[目录、卷与备份](#目录卷与备份)。
 
@@ -101,7 +101,7 @@ docker compose exec agentbridge printenv WORKSPACE_ROOT WORKSPACE_PROJECT
 
 最后一条命令在上述配置下应输出 `/data/workspace` 和 `.`。`--check` 验证路径存在及启动配置，不检查写权限。
 
-使用已发布镜像时，将上面的每条 Compose 命令改为 `docker compose -f compose.image.yaml -f compose.override.yaml ...`，并将第一条命令的 `build` 改为 `pull`；显式使用 `-f` 时需要同时列出挂载覆盖文件。
+使用已发布镜像时，将上述每条 Compose 命令改为 `docker compose -f compose.image.yaml -f compose.override.yaml ...`，并将第一条命令的 `build` 改为 `pull`；显式使用 `-f` 时需要同时列出挂载覆盖文件。
 
 启用该挂载后，项目文件直接读写宿主机目录，SQLite 和 Claude 配置仍保存在原 agent-data 卷。已有卷中的 `/data/workspace` 内容会被挂载遮住，不会自动迁移或删除；如需保留其中的项目，请先复制到宿主机目录。备份时同时保存宿主机项目和 agent-data 卷。下文目录表描述默认命名卷部署。
 
@@ -151,7 +151,7 @@ Dockerfile 分为基础工具、依赖安装、ncc 构建、生产依赖裁剪�
 
 模型配置在运行时注入。Claude 的用户、项目和本地设置也可能覆盖网关地址及模型变量。部署前核对持久卷和项目中的 Claude 设置，并在网关侧确认实际请求路由。当前仅支持 Anthropic 兼容端点；未透传 Bedrock/Vertex/Foundry 开关与云凭证。容器内 `localhost` 指容器自身，宿主机网关需使用容器可达地址。模型网关必须兼容 Anthropic Messages、流式输出和工具调用。
 
-`--check` 只检查 Bridge 配置、已有绑定文件、项目路径与 Adapter 入口，不验证模型凭证、网络、目录写权限或真实模型调用。主模型和认证凭证当前不属于 Bridge 必填校验项，检查通过不能证明它们已正确配置。绑定文件缺少使用者、损坏或手动配置不全时仍会失败，详见[启动状态表](design.md#首次启动与绑定)。
+`--check` 只检查 Bridge 配置、已有绑定文件、项目路径与 Adapter 入口，不验证模型凭证、网络、目录写权限或真实模型调用。主模型和认证凭证当前不属于 Bridge 必填校验项，检查通过不能证明它们已正确配置。绑定文件缺少白名单用户、损坏或手动配置不全时仍会失败，详见[启动状态表](design.md#首次启动与绑定)。
 
 ## 上线验收
 

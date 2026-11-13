@@ -8,14 +8,14 @@
 
 OpenClaw 的[队列模式](https://docs.openclaw.ai/concepts/queue)和[会话控制器](https://docs.openclaw.ai/concepts/session-controller)用明确策略管理 steer、followup、collect、interrupt；其 [steering](https://docs.openclaw.ai/concepts/queue-steering) 依赖具体运行时支持，不能把该体验简单等同于“额外调用一次 LLM 分类”。
 
-当前安装的 Claude ACP v1 adapter 支持 `_session/steering`，通过初始化响应 `_meta.steering.supported` 声明；Bridge 按协商能力接入，不仅检查包版本。
+当前安装的 Claude ACP v1 Adapter 支持 `_session/steering`，通过初始化响应 `_meta.steering.supported` 声明；Bridge 按协商能力接入，不仅检查包版本。
 
 ## 决策
 
 1. 不增加独立 LLM 对话协调层，也不增加第二套网关、模型、凭据、对话记忆或意图分类调用。需求理解、代码规划、工具执行和执行上下文管理继续交给现有 Claude Code。
-2. 保留有界 FIFO 队列、独立管理命令、默认 5 秒自动反馈及 4 小时闲置回收。显式命令直接走规则；普通消息空闲时交给 Claude，繁忙时排队。使用者可显式选择引导当前任务，不使用关键词猜测来自动中断或取消任务。
+2. 保留有界 FIFO 队列、独立管理命令、默认 5 秒自动反馈及 4 小时闲置回收。显式命令直接走规则；普通消息空闲时交给 Claude，繁忙时排队。用户可显式选择引导当前任务，不使用关键词猜测来自动中断或取消任务。
 3. 只有任务管理层可提交或改变任务状态；模型文字中的“完成了”不能替代任务完成事件。通知层根据真实任务事件发送回执和完成消息。
-4. steering、原生事件、交互问题及会话偏好通过适配器能力协商接入；某项 CLI 交互未被适配器暴露时，明确记录差距，不通过模拟终端按键或解析界面文案补接口。
+4. steering、原生事件、交互问题及会话偏好通过 Adapter 能力协商接入；某项 CLI 交互未被 Adapter 暴露时，明确记录差距，不通过模拟终端按键或解析界面文案补接口。
 
 ## steering 的投递契约
 

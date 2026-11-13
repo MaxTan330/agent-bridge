@@ -19,7 +19,7 @@ flowchart LR
 
 ## 一次性设置
 
-Release Please Action 固定为官方 `v5.0.0` 的提交 SHA，使用 Node 24 的 Action 运行时；这是 GitHub runner 执行 Action 的版本，与应用及 Docker 镜像使用的 Node 26 独立。升级依据见 [官方 v5 发布说明](https://github.com/googleapis/release-please-action/releases/tag/v5.0.0)。Action 升级不替代下面的仓库权限设置。
+Release Please Action 固定为官方 `v5.0.0` 的提交 SHA，使用 Node 24 的 Action 运行时；这是 GitHub runner 执行 Action 的版本，与应用及 Docker 镜像使用的 Node 26 独立。升级依据见 [官方 v5 发布说明](https://github.com/googleapis/release-please-action/releases/tag/v5.0.0)。Action 升级不替代后续的仓库权限设置。
 
 1. 将工作流及配置合并到 `main`，启用 GitHub Actions。
 2. 在 Settings → Actions → General 中允许 GitHub Actions 创建 Pull Request。工作流为 Release Please 声明 `contents: write`、`issues: write`、`pull-requests: write`，为 GHCR 发布声明 `packages: write`；签名 job 及调用方还声明 `id-token: write`，用于获取 OIDC 身份。组织策略也需允许这些操作。
@@ -72,7 +72,7 @@ GitHub Release 创建成功不代表镜像发布完成，需等待 Release workf
 
 无需配置 Cosign 私钥。签名和验证材料随镜像存放于 GHCR；签名证书身份及记录会写入公共 Sigstore 透明日志。原理见 [Sigstore 容器签名](https://docs.sigstore.dev/cosign/signing/signing_with_containers/)，复用 workflow 的身份取自 [Fulcio 的 job_workflow_ref](https://github.com/sigstore/fulcio/blob/main/docs/oidc.md#github)。
 
-成功后在 Actions 的 `sign` job 摘要查看版本、digest、源码提交号和签名身份。安装 Cosign 3 后，将摘要里的完整镜像 digest 填入下面命令（私有镜像需先 `docker login ghcr.io`）：
+成功后在 Actions 的 `sign` job 摘要查看版本、digest、源码提交号和签名身份。安装 Cosign 3 后，将摘要里的完整镜像 digest 填入以下命令（私有镜像需先 `docker login ghcr.io`）：
 
 ```sh
 IMAGE='ghcr.io/maxtan330/agent-bridge@sha256:<摘要中的完整digest>'
