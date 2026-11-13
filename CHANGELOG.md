@@ -4,6 +4,18 @@ Release Please 根据 Conventional Commits 在发布 PR 中维护此文件，版
 
 首个版本为 `package.json` 中的 `0.1.0`，对应 Git 标签 `v0.1.0` 和镜像标签 `0.1.0`。以下为接入版本管理时的能力记录，正式发布条目由 Release Please 在发布 PR 中生成。
 
+## [0.3.0](https://github.com/MaxTanForge/agent-bridge/compare/v0.2.0...v0.3.0) (2026-11-13)
+
+
+### Features
+
+* improve ACP task results and session history ([6b978a8](https://github.com/MaxTanForge/agent-bridge/commit/6b978a8a1b0ac3eef41d006f4ba080ec1c4cb486))
+
+
+### Bug Fixes
+
+* recover from bridge failures and preserve reply order ([3804926](https://github.com/MaxTanForge/agent-bridge/commit/38049268d7694fe828c763b8d9dea638acf24b6f))
+
 ## [0.2.0](https://github.com/MaxTan330/agent-bridge/compare/v0.1.0...v0.2.0) (2026-11-12)
 
 
