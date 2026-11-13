@@ -22,7 +22,7 @@ services:
       # true lets the first-scan confirm page also offer choosing an existing app.
       FEISHU_SELECT_EXISTING_APP: ${FEISHU_SELECT_EXISTING_APP:-false}
       # Container path; intentionally independent of local Node's WORKSPACE_ROOT in .env.
-      # To mount a host project here, see README > 使用宿主机已有项目目录.
+      # To mount a host project here, see docs/deployment.md > 使用宿主机已有项目目录.
       WORKSPACE_ROOT: /data/workspace
       WORKSPACE_PROJECT: ${WORKSPACE_PROJECT:-.}
       TASK_TIMEOUT_MS: ${TASK_TIMEOUT_MS:-7200000}

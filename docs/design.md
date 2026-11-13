@@ -1,6 +1,90 @@
 # AgentBridge 实现设计
 
-本文描述仓库当前实现，行为以关联源码和测试为依据。部署操作见 [README](../README.md)，环境变量示例见 [.env.example](../.env.example)。设计与代码变更应在同一提交中更新。
+本文描述仓库当前实现，行为以关联源码和测试为依据。使用、命令与排障见[使用与运维指南](usage.md)，部署操作见[部署指南](deployment.md)，环境变量示例见 [.env.example](../.env.example)。设计与代码变更应在同一提交中更新。
+
+## 设计说明
+
+Bridge 的设计可以概括为三条主线：飞书事件进入后先鉴权、去重和命令分流；普通任务进入串行队列，由 ACP Runtime 驱动 Claude Code 执行；结果先持久化再投递，失败可由 `/result` 取回。跨重启的事实只落在 SQLite，工作区内的任务串行执行，Bridge 本身不承担对话理解或代码规划。
+
+### 架构总览
+
+```mermaid
+flowchart LR
+  U["飞书用户 / 群聊"] -->|WebSocket 事件| F["feishu.ts<br/>接入与归一化"]
+  F --> B["bridge.ts<br/>鉴权 / 去重 / 命令分流<br/>FIFO 队列 / 工作区互斥"]
+  B --> C["commands.ts<br/>agent-features.ts<br/>命令与原生能力"]
+  C --> ST["agent-state.ts<br/>interactions.ts<br/>事件投影与提问"]
+  B --> R["runtime.ts<br/>ACP 客户端"]
+  R <--> A["Claude ACP 子进程"]
+  A --> GW["模型网关"]
+  A --> W["/data/workspace<br/>固定项目"]
+  B --> P["feishu-replies.ts<br/>卡片 / 分片 / 降级"]
+  B --> D[("SQLite<br/>/data/bridge")]
+  P -->|结果 / 卡片| U
+```
+
+`bridge.ts` 是唯一能改变任务状态的调度层；`runtime.ts` 只负责 ACP 协议与进程生命周期；`feishu-replies.ts` 只负责投递与降级。飞书接入、命令解析、事件投影和持久化各自独立，均不持有第二套队列。
+
+### 消息处理流程
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as 飞书用户
+  participant F as feishu.ts
+  participant B as bridge.ts
+  participant C as 命令与原生能力
+  participant R as runtime.ts
+  participant A as Claude ACP
+  participant DB as SQLite
+  participant P as feishu-replies.ts
+
+  U->>F: 消息事件
+  F->>B: 归一化 Inbound
+  B->>B: 白名单鉴权
+  alt 保留命令或原生能力命令
+    B->>C: 路由并校验
+    C-->>U: 状态 / 结果 / 偏好响应
+  else 普通任务
+    B->>DB: BEGIN IMMEDIATE 写入去重与任务
+    alt 工作区空闲
+      B->>R: 立即执行
+    else 工作区忙
+      B->>B: 入队并回执编号
+      Note over B: 当前任务结束并保存结果后，队首进入执行
+    end
+    R->>A: new / load + set_mode + prompt
+    A-->>R: 文本、工具、计划、提问事件
+    R-->>B: 事件回调
+    B->>DB: 保存终态与结果
+    B->>P: 投递最终回复
+    P-->>U: 卡片或富文本
+  end
+```
+
+入队回执与执行并行，最终回复等待本任务回执和在途进度；排队等待不计入执行时限。命令、去重键和会话键的细节见[接入与命令](#接入与命令)。
+
+### 任务状态机
+
+```mermaid
+stateDiagram-v2
+  [*] --> queued: 工作区忙
+  [*] --> running: 工作区空闲
+  queued --> running: 队首开始执行
+  queued --> cancelled: /cancel 编号 或 /cancel all
+  running --> completed: end_turn
+  running --> failed: 输出限制 / 模型拒绝 / 未知结束原因 / 异常
+  running --> cancelled: /cancel 或执行超时
+  queued --> interrupted: 停机或异常退出后重启
+  running --> interrupted: 异常退出后重启
+  completed --> [*]
+  failed --> [*]
+  cancelled --> [*]
+  interrupted --> [*]
+  note right of interrupted: 异常重启不重放任务，queued 任务同时保存未执行结果
+```
+
+`starting`、`executing`、`cancelling`、`delivering` 是内存中的 TaskPhase，不写入 SQLite 的任务终态；终态与结果文本在同一事务中保存。仅 `end_turn` 记为 `completed`，非正常结束保留部分输出和原因，供 `/result` 取回。正常停机时，执行中任务走取消路径记为 `cancelled`，排队任务记为 `interrupted`。
 
 ## 运行范围与技术选型
 
@@ -17,7 +101,7 @@
 | [main.ts](../src/main.ts) | 校验配置和项目路径、组装实例、启动飞书、响应退出信号 |
 | [bootstrap.ts](../src/bootstrap.ts)、[feishu-registration.ts](../src/feishu-registration.ts) | 首次扫码注册、凭据持久化、使用者绑定、机器人身份查询及终端二维码 |
 | [config.ts](../src/config.ts)、[workspace.ts](../src/workspace.ts) | 环境变量校验；通过 realpath 确认固定项目为注册根目录内的现存目录 |
-| [feishu.ts](../src/feishu.ts) | 消息归一化、长连接事件、回复分片与 HTTP 取消 |
+| [feishu.ts](../src/feishu.ts) | 消息归一化、长连接事件与 HTTP 取消 |
 | [bridge.ts](../src/bridge.ts) | 用户鉴权、命令、全局任务互斥、会话映射、进度、结果与取消 |
 | [agent-features.ts](../src/agent-features.ts)、[commands.ts](../src/commands.ts) | 原生能力应用层与保留命令解析，不拥有队列调度权 |
 | [agent-state.ts](../src/agent-state.ts)、[interactions.ts](../src/interactions.ts) | 有界事件投影、独立用户输入请求与校验 |
@@ -34,6 +118,29 @@
 
 启动先检查网关/基础配置、项目路径与 Adapter 入口，之后才处理飞书绑定。`--check` 不发起网络操作、不注册、不写入绑定文件；它检查配置是否可进入启动流程，不代表服务已可用。
 
+```mermaid
+flowchart TD
+  S([启动]) --> V{"配置、项目路径与 Adapter 有效?"}
+  V -- 否 --> X[启动失败]
+  V -- 是 --> K{"--check?"}
+  K -- 是 --> R1[提示可启动或需要绑定]
+  K -- 否 --> M{"存在手动飞书配置?"}
+  M -- 是 --> MC{"三个应用字段与 ALLOWED_USERS 完整?"}
+  MC -- 否 --> X
+  MC -- 是 --> R2[校验 App ID 后连接长连接]
+  M -- 否 --> BF{"绑定文件状态"}
+  BF -- 不存在 --> QR["打印二维码与授权链接<br/>registerApp 创建应用"]
+  BF -- 损坏或未知版本 --> X
+  QR --> SV[保存凭据]
+  BF -- 已保存 --> CK{"brand 为 feishu<br/>且使用者有效?"}
+  SV --> CK
+  CK -- 否 --> X
+  CK -- 是 --> BN{"机器人 open_id 已保存?"}
+  BN -- 是 --> R2
+  BN -- 否 --> QB["查询机器人 open_id"]
+  QB --> R2
+```
+
 | 当前绑定状态 | `--check` | 正常启动 |
 |---|---|---|
 | 无手动配置、无绑定文件 | 成功并提示需要绑定 | 打印二维码，创建新应用 |
@@ -45,37 +152,29 @@
 
 任一 FEISHU_APP_ID/FEISHU_APP_SECRET/FEISHU_BOT_OPEN_ID 非空即选择手动模式，必须同时提供这三个字段和非空 ALLOWED_USERS，不能从保存的其他应用补齐使用者。否则读取 SQLite 同目录的 feishu-binding.json；不存在时调用官方 SDK registerApp，终端打印二维码和备用验证链接。默认 createOnly=true 限定创建新应用；FEISHU_SELECT_EXISTING_APP=true 时不传 createOnly，确认页额外提供“选择已有应用”入口，扫码者可改为选择自己名下的已有应用并增量开通同一组 addons（preset=false 的机器人最小基座、六个应用权限：发消息、接收私聊、接收群聊 @、读取消息及附件资源、发送/删除表情回复、CardKit 卡片写入，与消息事件订阅），不申请用户身份权限；选择已有应用时的审批与发布规则以确认页为准。
 
-注册返回的应用凭据和扫码用户身份先写入绑定文件，再通过 tenant_access_token 和 bot/v3/info 获取机器人 open_id。写入采用同目录随机临时文件及 rename，POSIX 权限 0600；不打印 App Secret，文件已排除出 Git 和 Docker 构建上下文。bot 查询失败时保存的凭据仍可在重启后复用。文件包含 version、appId、appSecret、brand，以及可选 ownerOpenId/botOpenId。损坏或未知版本停止启动，不创建替代应用。缺少扫码身份时不开放访问，允许显式 ALLOWED_USERS 补足；有扫码身份时该变量也可覆盖允许使用者。当前仅支持 Feishu，拒绝 Lark 记录并保留文件。
+注册返回的应用凭据和扫码用户身份先写入绑定文件，再通过 tenant_access_token 和 bot/v3/info 获取机器人 open_id。写入采用同目录随机临时文件及 rename，POSIX 权限 0600；不打印 App Secret，文件已排除出 Git 和 Docker 构建上下文。文件包含 version、appId、appSecret、brand，以及可选 ownerOpenId/botOpenId。损坏或未知版本停止启动，不创建替代应用。缺少扫码身份时不开放访问，允许显式 ALLOWED_USERS 补足；有扫码身份时该变量也可覆盖允许使用者。
 
-注册前通过临时探测文件检查绑定目录可写；这不能保证授权成功后磁盘仍可写。只有凭据成功保存后才能保证重启复用；远端创建成功而本地写入失败时，需要从飞书后台找回应用并改用完整手动配置，不能靠反复扫码恢复同一应用。Windows 文件访问权限由目录 ACL 控制，0600 不等同于配置 Windows ACL。修改 DATABASE_PATH 的父目录也会改变绑定文件位置，迁移时需一并移动绑定文件；备份包含 App Secret，应按凭据管理。
+注册前通过临时探测文件检查绑定目录可写；这不能保证授权成功后磁盘仍可写。只有凭据成功保存后才能保证重启复用。绑定文件的位置随 DATABASE_PATH 的父目录变化，备份包含 App Secret，应按凭据管理；操作侧的恢复与迁移步骤见[使用与运维指南](usage.md#接入飞书)。
 
 设备授权最多等待 10 分钟，注册和身份查询的单次 HTTP 请求上限为 15 秒；SIGINT/SIGTERM 中止启动。registerApp 的官方注册请求通过临时、限定 URL 的 Axios 拦截器附加 AbortSignal，并在结束时移除。注册仅使用平台确认页配置，不额外调用应用管理 API 改写订阅方式或强制发布。平台默认 PersonalAgent 长连接流程及 addons 的生效受平台/租户能力影响；缺权限、待审核或回调方式不符时仍需后台确认。绑定完成不等于真实收发、表情反馈和卡片渲染已经验收。
 
 ### 消息处理
 
-仅接收 sender_type=user 的事件。私聊可直接发送；群聊必须在 mentions 中包含配置机器人的 open_id，移除对应 mention 占位文本后执行。所有消息命令都要求发送者位于 ALLOWED_USERS；ADMIN_USERS 不自动获得普通消息执行权限。
+接入规则（私聊/群聊 @、白名单、附件类型）见[消息规则](usage.md#消息规则)。实现上仅接收 sender_type=user 的事件；群聊必须在 mentions 中包含配置机器人的 open_id，移除对应 mention 占位文本后执行；ADMIN_USERS 不自动获得普通消息执行权限。
 
 原始 content 字符串最多 64,000 个 UTF-16 码元，解析后的 text 最多 16,000 个 UTF-16 码元，长度检查发生在移除 mention 之前。图片和文件事件只先保存资源元数据，鉴权并调度执行后才从飞书下载；流式累计上限为图片 5 MiB、UTF-8 文本 256 KiB，不写入工作区。附件准备最多 30 秒并受任务取消约束。超长、损坏或其他不支持的消息对符合接入规则的白名单用户返回拒绝提示，不截断指令后执行。无效事件、空文本和未获授权消息被忽略。
 
-| 输入 | 行为 |
-|---|---|
-| 普通文本 | 空闲时启动任务，忙时入 FIFO 队列；执行时恢复对应用户、聊天、话题及项目的会话 |
-| /queue | 查看本人的当前应用、聊天、话题下排队任务编号、摘要及前方数量；管理员可查看同话题其他用户的队列 |
-| /cancel | 发起人或管理员在同一应用、聊天、话题取消当前任务；不清空等待项，收尾后继续下一项 |
-| /cancel <id> | 按编号取消同一应用、聊天和话题内的指定排队或执行中任务，限发起人或管理员 |
-| /cancel all | 仅清空本人当前会话的排队任务，不影响执行中任务或其他用户 |
-| /new | 本会话无执行中和排队任务时删除会话映射；不删除任务结果或 Adapter 历史 |
-| /result | 取回本人的当前话题最近一次已保存结果；运行中也可使用，不重放 prompt |
-| /result <id>、/result failed | 取回本人当前话题的指定结果，或最近一次投递失败的结果 |
-| /status | 查询当前任务阶段、已用时间、执行时限与最近文字输出时间；不调用模型、不返回任务正文 |
+### 命令路由
 
-/status 仅对同一应用、聊天、话题下的任务发起人或白名单内管理员展示详情；其他已授权使用者只能看到当前会话无任务、工作区忙。同时显示当前会话可查看的排队数量，不返回排队指令正文；无任务时直接回复空闲，不作为普通 prompt 执行。最近输出仅统计非空的 agent_message_chunk 文本，不代表工具心跳，不据此推断停滞或完成百分比。
+命令的完整列表与用户可见行为以[命令](usage.md#命令)为准，本节只说明调度语义。Bridge 保留命令在普通任务接纳前由 `commands.ts` 统一识别并分流：任务、队列、结果和状态类命令不进入模型；管理查询、`/answer`、`/skip` 和引导不占队列容量，队列满时仍可执行；`/new` 立即检查当前会话，存在未完成任务时拒绝；未识别的 slash 指令仍作为普通任务进入 FIFO 队列。原生能力命令由 `agent-features.ts` 在能力协商后校验和转换，不创建第二套队列。
+
+状态查询的可见范围和无任务时的回复见[命令](usage.md#命令)。最近输出仅统计非空的 agent_message_chunk 文本，不代表工具心跳，不据此推断停滞或完成百分比。
 
 消息去重键为 JSON 数组 [feishu, account, messageId]，其中 account 为飞书 App ID。会话键为 [feishu, account, chatId, threadId, userId, workspace绝对路径]；没有 threadId 时使用空字符串。同一聊天不同用户使用各自的 ACP 会话，共享项目文件。群聊中的任务结果和 /result 按原消息回复，同一群聊或话题的成员可见。
 
 ## 任务与会话生命周期
 
-回复模式由 TASK_REPLY_MODE 控制，默认 auto。auto 在执行达到 TASK_BACKGROUND_NOTICE_MS（默认 5 秒、可设 10 秒，范围 1–60 秒）时通知一次，快速完成则仅发结果；background 总是立即回执；stream 保留 Typing 和中间流式卡片。auto/background 都不发送持续 Typing 或中间卡片，最近文本输出仍用于 /status。回执不阻塞模型执行，且最终回复等待其有界投递结束；执行结束清除通知计时器，避免迟发“仍在执行”。排队等待不计入该计时。
+回复模式由 TASK_REPLY_MODE 控制，默认 auto；三种模式的用户可见行为见[回复方式](usage.md#回复方式)。实现上，auto 在达到 TASK_BACKGROUND_NOTICE_MS（默认 5 秒，范围 1–60 秒）时通知一次；回执不阻塞模型执行，最终回复等待其有界投递结束；执行结束清除通知计时器，避免迟发“仍在执行”；排队等待不计入该计时。
 
 1. 鉴权后处理控制命令与拒绝输入，独立去重；普通任务进入接纳逻辑。控制命令不会进入队列或模型。
 2. 正常任务在 BEGIN IMMEDIATE 事务内同时插入去重记录和 running（空闲）或 queued（繁忙）任务。事务失败整体回滚并提示重新发送。队列满时仅消费消息去重键，明确告知未接纳。队列项的 prompt 仅在内存中保留。
@@ -84,7 +183,7 @@
 5. 若有会话映射且 Agent 声明支持 loadSession，则尝试恢复；恢复失败改建新会话。新旧会话 ID 不同时在结果卡片附注说明，不能仅凭数据库映射宣称上下文已恢复。
 6. 建立权限模式后保存会话 ID，再发送一次 prompt；发送结果失败不会重放 prompt。
 7. 仅 stopReason 为 end_turn 时标记 completed；取消响应标记 cancelled，达到执行或输出限制、模型拒绝、未知结束原因及执行异常标记 failed。非正常结束响应保留部分输出并附原因，随结果持久化，供 /result 取回。取消和失败路径等待运行进程清理。清理失败时停止接受新消息，并保留运行进程句柄以便再次清理。
-8. 运行时清理后尝试在同一事务中保存终态与最终文本，然后释放工作区。同步将队首 queued 改为 running 并设置 active，保持 FIFO。入队回执与执行并行，最终回复等待本任务的回执及在途进度消息。不同任务的飞书回复可并行投递。队列启动落库或进程清理失败时停止调度并中断剩余队列。
+8. 执行结束后，取消或失败路径先清理 Adapter；随后在同一事务中保存终态与最终文本，刷新会话时间并释放工作区。同步将队首 queued 改为 running 并设置 active，保持 FIFO。入队回执与执行并行，最终回复等待本任务的回执及在途进度消息。不同任务的飞书回复可并行投递。队列启动落库或进程清理失败时停止调度并中断剩余队列。
 
 成功任务的 Adapter 暂时保持驻留，下一任务 open 时重建进程，或在停机及全局闲置满 SESSION_IDLE_TIMEOUT_MS（默认 4 小时）时清理。执行中和队列非空时不执行空闲进程回收；新任务等待已开始的空闲清理完成再 open，防止新进程被旧清理终止。子进程 stdout 用于 ACP，stderr 被消费但不写入业务日志。初始化、新建、恢复、设置模式的单次请求上限各为 30 秒；prompt 由整体任务超时控制。
 
@@ -117,7 +216,7 @@ SQLite 不保存完整模型历史；Adapter 会话目录需另外持久化。�
 
 new/load 均传入 _meta.claudeCode.options.allowDangerouslySkipPermissions=true。默认返回会话必须声明支持 bypassPermissions，并成功响应 session/set_mode(bypassPermissions)，之后才允许 prompt。用户显式 /mode plan 时要求支持并确认 plan 模式，不退回执行模式。缺少模式、设置失败或运行时切换到非请求模式时终止任务，不退回逐条手动审批。模型及 effort 按原生配置选项验证。settings 同时设置 includeCoAuthoredBy=false、attribution.commit/pr 为空及 sessionUrl=false，不修改 Git 作者。
 
-此部署采用 Claude Code 免审批执行：白名单用户启动的任务可直接在容器用户权限下读写文件和执行命令。Bridge 不逐条代点允许；意外收到 session/request_permission 时直接 cancelled，不发送卡片或等待审批。cwd 不是沙箱，所有使用者必须获授权访问容器可读写的资源。
+此部署采用 Claude Code 免审批执行：白名单用户启动的任务可直接在容器用户权限下读写文件和执行命令。Bridge 不逐条代点允许；意外收到 session/request_permission 时直接 cancelled，不发送卡片或等待审批。Bridge 不提供客户端文件/终端 ACP 能力，读写和命令由 Agent 自身工具执行。cwd 不是沙箱，所有使用者必须获授权访问容器可读写的资源。
 
 普通信息问题通过独立 elicitation/create 处理，不能作为工具授权。每个问题绑定任务会话和请求编号，/answer、/skip 不进入任务队列；任务结束和取消会释放等待。完整模块边界、命令及能力限制见 [Claude 原生能力](claude-capabilities.md)。
 
@@ -195,21 +294,15 @@ Agent 子进程仅获得运行所需的系统路径、临时目录、HOME/USERPR
 
 版本发布由 Release Please 管理：发布 PR 同步 `package.json`、`CHANGELOG.md` 和 manifest，合并后创建 GitHub Release，并直接调用镜像 workflow。发布前校验 tag、package、manifest 和 changelog 一致；镜像仅使用 package 的完整稳定版本号，发布后由独立 job 使用 Cosign/OIDC 对 digest 签名并验证；普通 main/PR 构建不发布、不签名。ACP 握手、启动日志和 --version 同样读取 package 版本。详见[版本发布](releases.md)。
 
-下面描述默认源码部署。另提供独立的 `compose.image.yaml`，无需源码构建上下文，要求显式设置 `AGENTBRIDGE_IMAGE` 为已发布版本；运行时环境、命名卷与源码部署保持一致。可按 README 的可选 bind mount 示例将宿主机代码目录挂载到 `/data/workspace`，此时项目代码由宿主机持久化，SQLite 和 Claude 配置仍在 agent-data 卷。
+提供两个 Compose 文件：`compose.yaml` 使用当前仓库作为 build context 构建，`compose.image.yaml` 不构建、要求显式设置 `AGENTBRIDGE_IMAGE` 为已发布版本；两者的运行时环境、命名卷和固定路径保持一致。也可将宿主机代码目录 bind mount 到 `/data/workspace`，此时项目代码由宿主机持久化，SQLite 和 Claude 配置仍在 agent-data 卷。部署步骤、卷迁移与备份见[部署指南](deployment.md)。
 
 直接依赖与开发依赖使用 ^ 范围，pnpm-lock.yaml 固定实际安装版本；升级时更新锁文件并重新验证。必须保留可选平台二进制，TypeScript 7 与 Claude SDK 均依赖它们。工具版本以 package.json 为准。
 
 构建链路为 TypeScript 输出 .build → scripts/entry.cjs → ncc → dist/index.cjs。CommonJS 边界兼容飞书 SDK 的 __dirname。交付整个 dist 目录，包含 ncc 生成的 worker 资源。Claude ACP 作为外部子进程依赖保留在生产 node_modules，不能仅交付单个 JS 文件。
 
-[Dockerfile](../Dockerfile) 默认使用 node:26.13.0-bookworm-slim，BASE_IMAGE 可替换为兼容的 Node 26 Debian bookworm 内部镜像。分 base、dependencies、build、production-dependencies、runtime 五阶段。base 配置 npm/pnpm 镜像源（默认 npmmirror）、apt 源（默认阿里云）和 Asia/Shanghai 时区，安装 pnpm 12.14.0、Bash、Git、SSH 客户端、curl、ripgrep、CA、tzdata；这些工具留在 runtime 供 Agent 执行项目任务。保留 Debian/glibc，不直接使用其他项目的 Alpine Node 镜像。没有预装 Python/Go、浏览器、AWS CLI 或 native addon 编译工具。
+[Dockerfile](../Dockerfile) 默认使用 node:26.13.0-bookworm-slim，BASE_IMAGE 可替换为兼容的 Node 26 Debian bookworm 内部镜像。分 base、dependencies、build、production-dependencies、runtime 五阶段；runtime 包含 dist 及外部 Adapter 生产依赖，以 node 用户运行，不包含 Bridge 源码、TypeScript、ncc。镜像保留 Debian/glibc，不直接使用 Alpine Node 镜像；Claude 使用 SDK 的平台二进制，不另装全局 CLI。镜像内预装工具、镜像源和构建参数的清单见[部署指南](deployment.md#镜像内容与构建参数)。
 
-build 执行构建和产物检查；runtime 包含 dist 及外部 Adapter 生产依赖，以 node 用户运行，不包含 Bridge 源码、TypeScript、ncc。最后一个 RUN 在非 root 身份检查命令和镜像目录写权限；这不能证明部署后绑定目录和已有卷的权限正确。Claude 使用 SDK 的平台二进制，不另装全局 Claude CLI。
-
-[compose.yaml](../compose.yaml) 使用当前仓库目录作为 build context，按 Dockerfile 多阶段构建，不声明远端应用 image。BASE_IMAGE、NPM_REGISTRY、DEBIAN_MIRROR 从部署环境读取，默认值与 Dockerfile 一致；模型和飞书凭证仅在运行时注入。首次执行 docker compose build，更新源码执行 docker compose up -d --build。需要完整源码上下文，不能仅粘贴 Compose 到 Portainer Web editor 部署；Portainer 构建路径未验收。启用 init、unless-stopped、no-new-privileges 并删除 capabilities，不开放入站端口。单个 agent-data 命名卷挂载到 /data，下分 workspace（代码）、bridge（SQLite 和飞书绑定）、claude（Claude 配置与历史）三个目录。不绑定宿主机代码目录，项目在容器内 clone 或创建。WORKSPACE_PROJECT 从部署环境读取，默认 .；它是根目录内的项目选择值，最终 Agent cwd 与 ACP new/load cwd 均为 /data/workspace 下选中的绝对真实路径，Bridge 自身 cwd 保持 /app。
-
-Compose 固定 WORKSPACE_ROOT=/data/workspace、DATABASE_PATH=/data/bridge/agentbridge.db、HOME=/home/node、CLAUDE_CONFIG_DIR=/data/claude，以覆盖 .env 中用于本地开发的路径。项目、SQLite 与 Claude 配置/历史目录共享 agent-data 卷，未挂载宿主机 HOME。首次创建卷时从镜像初始化三个 node 所有的子目录；选择项目子目录时需先创建再启动。HOME 下其他文件和缓存不持久化。卷名默认带 Compose 项目名前缀，迁移目录时应保持原项目名（所有命令使用 `docker compose -p <旧项目名>`），确认复用原 agent-data 卷；迁移 Git 仓库不会复制 Docker 卷，跨主机需另行备份恢复。容器 UID 1000 需有项目和数据目录读写权限，旧卷权限需单独维护。Compose 显式映射可选的 ANTHROPIC_BASE_URL、ANTHROPIC_MODEL、四个 ANTHROPIC_DEFAULT_*_MODEL 和 CLAUDE_CODE_SUBAGENT_MODEL，未设置时注入空值；认证变量和 TASK_TIMEOUT_MS 也显式映射，任务时限默认 2 小时，飞书默认扫码绑定；手动飞书配置、其他超时覆盖和代理需按需增加映射；Agent 所需变量再经 runtime 白名单传递，不烘焙入镜像；NPM_REGISTRY 同时映射到 npm_config_registry，供 Agent 中 npm/pnpm 使用。只部署一个实例，不支持多个实例共享工作区或数据库。
-
-模型值在 shell、可选的 .env 或 Portainer Stack 环境变量中维护，Compose 显式列出模型变量映射便于部署核查；同名 shell 变量优先于 .env 参与插值。不自动将空别名映射到主模型，所需别名应填写网关实际支持的 ID。变更运行时模型变量需重建容器（docker compose up -d --force-recreate）以更新环境，不需要重新构建镜像；docker compose restart 不重新注入环境变量。Portainer 修改变量后同样需要更新 Stack、重建容器。Compose 未列出的变量需额外添加 environment 映射。
+[compose.yaml](../compose.yaml) 启用 init、unless-stopped、no-new-privileges 并删除 capabilities，不开放入站端口。单个 agent-data 命名卷挂载到 /data，下分 workspace（代码）、bridge（SQLite 和飞书绑定）、claude（Claude 配置与历史）三个目录；不绑定宿主机代码目录时，项目在容器内 clone 或创建。Compose 固定 WORKSPACE_ROOT=/data/workspace、DATABASE_PATH=/data/bridge/agentbridge.db、HOME=/home/node、CLAUDE_CONFIG_DIR=/data/claude，以覆盖 .env 中用于本地开发的路径；WORKSPACE_PROJECT 从部署环境读取，默认 .，最终 Agent cwd 与 ACP new/load cwd 均为 /data/workspace 下选中的绝对真实路径，Bridge 自身 cwd 保持 /app。Compose 显式映射模型、认证和超时变量，未列出的变量需额外添加 environment 映射；Agent 所需变量再经 runtime 白名单传递，不烘焙入镜像。运行时变量变更需要重建容器，详见[部署指南](deployment.md#环境注入与网关)。只部署一个实例，不支持多个实例共享工作区或数据库。
 
 ## 验证依据与验收边界
 

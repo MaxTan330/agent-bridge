@@ -2,9 +2,20 @@
 
 `package.json` 的 `version` 是应用和镜像版本的来源。Release Please 负责在发布 PR 中同步更新它、`CHANGELOG.md` 和 `.release-please-manifest.json`，合并后创建 `v<version>` 标签和 GitHub Release，再发布 `ghcr.io/maxtan330/agent-bridge:<version>`。例如 package 版本为 `0.1.0` 时，Git 标签为 `v0.1.0`，镜像标签为 `0.1.0`。
 
+```mermaid
+flowchart LR
+  C["Conventional Commit"] --> RP["Release Please PR<br/>package / CHANGELOG / manifest"]
+  RP -->|合并| T["Git 标签 + GitHub Release"]
+  T --> W["Docker image workflow"]
+  W --> TEST["类型检查 / 测试 / 构建"]
+  TEST --> PUSH["推送 GHCR"]
+  PUSH --> SIGN["Cosign 签名 + 验签"]
+  SIGN --> DONE["发布完成"]
+```
+
 运行时 ACP 握手、启动日志和 `node dist/index.cjs --version` 使用同一 package 版本；构建时打包版本数据，不从业务项目的 package 读取。镜像 OCI version 标签和 Cosign 签名中的 version 注解同样使用发布校验的 package 版本。
 
-首次发布使用当前 package 版本 `0.1.0`，对应 `v0.1.0` 和镜像 `:0.1.0`。manifest 初始为空，表示尚未发布，避免将 `0.1.0` 当作已发布版本再自动递增；配置显式设置 `initial-version: 0.1.0`，使首次发布 PR 使用 `0.1.0` 并写入 manifest；不能依赖 Node 策略的默认初始版本。后续版本再按提交类型递增。镜像发布仅支持稳定三段版本号，不发布 `latest`、主版本浮动标签或预发布版本，不发布 npm 包。配置落地后，首次真实发布仍需合并发布 PR 并等待镜像任务成功。
+首次发布使用 `0.1.0`，由配置中的 `initial-version: 0.1.0` 固定；manifest 从该版本开始记录，当前已是 `0.2.0`。后续版本按提交类型递增。镜像发布仅支持稳定三段版本号，不发布 `latest`、主版本浮动标签或预发布版本，不发布 npm 包。首次真实发布需合并发布 PR 并等待镜像任务成功。
 
 ## 一次性设置
 
@@ -30,12 +41,12 @@ feat!: 调整不兼容的配置格式
 
 采用默认版本策略：`fix` 对应补丁，`feat` 对应次版本，破坏性变更对应主版本。Release Please 汇总提交，创建或更新发布 PR；检查 PR 中的 package 版本和 changelog 后合并，即完成发布决策。只包含普通 `docs`/`chore` 等提交时，不一定会提出新版本。可在 Actions 手动运行 Release workflow 重新处理 `main`。
 
-首次目标已经是 `0.1.0`，无需额外指定。以后需要明确指定下一版本时，可在合并提交消息中加入 `Release-As` footer，保持空行，例如升级至 `0.2.0`：
+当前版本已经是 `0.2.0`，无需额外指定。以后需要明确指定下一版本时，可在合并提交消息中加入 `Release-As` footer，保持空行，例如升级至 `0.3.0`：
 
 ```text
 chore: prepare stable release
 
-Release-As: 0.2.0
+Release-As: 0.3.0
 ```
 
 Release Please 会据此更新发布 PR。使用 squash merge 时，应确保最终 squash 提交保留该 footer。不要只修改 Docker 标签；版本调整应经过发布 PR，并同步 package、manifest 和 changelog。版本规则参见 [Release Please 配置](https://github.com/googleapis/release-please/blob/main/docs/customizing.md)。
@@ -53,7 +64,7 @@ Release Please 创建 Release 后，调用 Docker image 工作流并传入确切
 
 检查、测试和镜像构建通过后，使用 package 版本推送到 GHCR。默认构建 `linux/amd64`，镜像带有版本和实际检出提交的 OCI 标签。Fork 会按自己的 GitHub 仓库名生成镜像路径；使用镜像部署文件时应填写对应的完整地址。
 
-GitHub Release 创建成功不代表镜像发布完成，需等待 Release workflow 的 `publish` 调用完成，包括 `image` 和 `sign` 两个 job。首次发布之前，文档中的 `0.1.0` 仅为用法示例。
+GitHub Release 创建成功不代表镜像发布完成，需等待 Release workflow 的 `publish` 调用完成，包括 `image` 和 `sign` 两个 job。文档中的版本号仅为示例，以实际发布成功的版本为准。
 
 ## 镜像签名与验证
 
@@ -68,26 +79,15 @@ IMAGE='ghcr.io/maxtan330/agent-bridge@sha256:<摘要中的完整digest>'
 cosign verify "$IMAGE" \
   --certificate-identity 'https://github.com/MaxTan330/agent-bridge/.github/workflows/docker-publish.yml@refs/heads/main' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  -a version=0.1.0
+  -a version=0.2.0
 ```
 
 版本应替换为目标发布版本；还可添加 `-a revision=<摘要中的源码提交号>`。Fork 需将镜像地址和证书身份替换为自己的仓库，身份中的仓库大小写须与 GitHub 一致。验证成功后可将 `AGENTBRIDGE_IMAGE` 设置为同一完整 digest 部署，避免验证与拉取间标签变化。Compose/Portainer 不自动执行验签，需要在部署前执行；签名证明来源与内容完整性，不代表实际功能已经验收。
 
 ## 重试、升级与回滚
 
-如果 GitHub Release 已创建，但测试、网络或 GHCR 推送失败，在 Actions → Docker image → Run workflow 中选择 `main`，将 `release-tag` 填为已有的 `v0.1.0`。工作流会检出该标签、重新验证并发布；留空只检查当前所选分支，不发布。不要移动已有版本标签来发布不同代码。
+如果 GitHub Release 已创建，但测试、网络或 GHCR 推送失败，在 Actions → Docker image → Run workflow 中选择 `main`，将 `release-tag` 填为已有的 `v0.2.0`。工作流会检出该标签、重新验证并发布；留空只检查当前所选分支，不发布。不要移动已有版本标签来发布不同代码。
 
 若镜像已推送而签名失败，该镜像可能已可拉取，但发布尚未完成。优先在原运行中 Re-run failed jobs，对同一 digest 补签并验证；手动重新运行完整发布会重建镜像，digest 可能改变，应重新验证最终摘要里的 digest。
 
-部署时在 `.env` 或 Portainer 中指定：
-
-```dotenv
-AGENTBRIDGE_IMAGE=ghcr.io/maxtan330/agent-bridge:0.1.0
-```
-
-```sh
-docker compose -f compose.image.yaml pull
-docker compose -f compose.image.yaml up -d
-```
-
-升级/回滚时替换为已发布的目标版本，保持 Compose 项目名及数据卷一致。源码构建方式仍使用原 `compose.yaml`。
+部署、升级和回滚镜像的步骤见[部署指南](deployment.md#按版本拉取镜像)。
